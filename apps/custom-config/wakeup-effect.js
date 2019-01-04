@@ -227,7 +227,7 @@ class WakeupEffect extends BaseConfig {
   }
   /**
    * process request from url
-   * @param {string} queryObj - object from url,
+   * @param {object|string} queryObj - object/string from url
    */
   onWakeupEffectStatusChangedFromUrl (queryObj) {
     var realQueryObj

@@ -52,7 +52,7 @@ class StandbyLight extends BaseConfig {
 
   /**
    * handler of the skill url
-   * @param {object} queryObj
+   * @param {object|string} queryObj - object/string from url
    */
   onStandbyLightSwitchStatusChanged (queryObj) {
     if (typeof queryObj === 'object' && queryObj.hasOwnProperty('action')) {

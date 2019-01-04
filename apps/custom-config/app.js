@@ -47,10 +47,16 @@ module.exports = function CustomConfig (activity) {
     logger.info(`on Url---->is called [${path}]`)
     if (path === 'firstLoad') {
       var customConfig = safeParse(queryObj.config)
+      logger.error(`load custom config: ${queryObj.config}`)
       if (customConfig && typeof customConfig === 'object') {
         for (var field in customConfig) {
           if (customConfig.hasOwnProperty(field) && urlMap.hasOwnProperty(field)) {
-            urlMap[field](safeParse(customConfig[field]))
+            var tmpObj = safeParse(customConfig[field])
+            if (tmpObj) {
+              urlMap[field](tmpObj)
+            } else {
+              urlMap[field](customConfig[field])
+            }
           }
         }
       }

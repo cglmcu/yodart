@@ -35,7 +35,7 @@ class ContinuousDialog extends BaseConfig {
 
   /**
    * handler of skill url
-   * @param {object} queryObj
+   * @param {object|string} queryObj - object/string from url
    */
   onPickupSwitchStatusChanged (queryObj) {
     if (typeof queryObj === 'object' && queryObj.hasOwnProperty('action')) {
