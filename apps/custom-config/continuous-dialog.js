@@ -38,8 +38,10 @@ class ContinuousDialog extends BaseConfig {
    * @param {object} queryObj
    */
   onPickupSwitchStatusChanged (queryObj) {
-    if (queryObj) {
+    if (typeof queryObj === 'object' && queryObj.hasOwnProperty('action')) {
       this.applyPickupSwitch(queryObj.action, queryObj.isFirstLoad)
+    } else if (typeof queryObj === 'string' && (queryObj === 'open' || queryObj === 'close')) {
+      this.applyPickupSwitch(queryObj, true)
     }
   }
 

@@ -55,8 +55,10 @@ class StandbyLight extends BaseConfig {
    * @param {object} queryObj
    */
   onStandbyLightSwitchStatusChanged (queryObj) {
-    if (queryObj) {
+    if (typeof queryObj === 'object' && queryObj.hasOwnProperty('action')) {
       this.applyStandbyLightSwitch(queryObj.action, queryObj.isFirstLoad)
+    } else if (typeof queryObj === 'string' && (queryObj === 'open' || queryObj === 'close')) {
+      this.applyStandbyLightSwitch(queryObj, true)
     }
   }
 

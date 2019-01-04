@@ -86,35 +86,20 @@ class DNDCommon {
    *                   - if result < 0, it's the millisecond to start time
    */
   static getDNDTime () {
-    function formatDate (dt) {
-      return `${dt.getFullYear()}-${dt.getMonth() + 1}-${dt.getDay()} ${dt.getHours()}:${dt.getMinutes()}:${dt.getSeconds()}`
-    }
     var now = new Date()
-    var curTimeZone = -(now.getTimezoneOffset() / 60)
-    now.setHours(now.getHours() + curTimeZone - TIME_ZONE)
-    var utcNow = now.getHours() * 100000 + now.getMinutes() * 1000 + now.getMilliseconds()
     var start = DNDCommon.formatTime(DNDCommon.getStartTime(), 22, 0)
     var end = DNDCommon.formatTime(DNDCommon.getEndTime(), 7, 0)
-    if (start >= end) {
+    if (start > end) {
       end.setDate(end.getDate() + 1)
     }
-    logger.info(`check utc time now:${formatDate(now)}   start:${formatDate(start)}   end:${formatDate(end)}`)
-    // hit
+    logger.info(`check time now:${Number(now)}   start:${Number(start)}   end:${Number(end)}`)
     if (now >= start && now < end) {
       return end - now
-    } else {
-      // check time range which is cross-day
-      var nowPlusDay = new Date()
-      nowPlusDay.setDate(nowPlusDay.getDay() + 1)
-      // hit
-      if (nowPlusDay >= start && nowPlusDay < end) {
-        return end - nowPlusDay
-      } else if (now >= end) { // not hit
-        start.setDate(start.getDate() + 1)
-        return now - start
-      } else {
-        return now - start
-      }
+    } else if (now < start) {
+      return now - start
+    } else if (now >= end) {
+      start.setDate(start.getDate() + 1)
+      return now - start
     }
   }
 
@@ -270,7 +255,7 @@ class DNDCommon {
     // TODO custom-config should add timeZone
     d.setHours(d.getHours() + curTimeZone - TIME_ZONE)
     d.setMinutes(minute)
-    return hour * 100000 + minute * 1000;
+    return d
   }
 
   /**
