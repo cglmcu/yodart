@@ -175,3 +175,69 @@ test('night mode check', function (t) {
 
   t.end()
 })
+
+// test('night mode check time', function (t) {
+//   var light = {}
+//   var sound = {}
+//   var life = {}
+//   // init
+//   mock.restore()
+//   mock.mockReturns(light, 'setDNDMode', undefined)
+//   mock.mockReturns(sound, 'setVolume', undefined)
+//   mock.mockReturns(sound, 'getVolume', 50)
+//   mock.mockReturns(life, 'getCurrentAppId', undefined)
+//   mock.mockReturns(life, 'on', undefined)
+//
+//   var nightMode = new NightMode({ component: { lifetime: life, light: light, sound: sound } })
+//   nightMode.init()
+//   var timeZone = -((new Date()).getTimezoneOffset() / 60)
+//   var startTime
+//   var endTime
+//   var option = {}
+//   var tag1
+//   var tag2
+//   var now = new Date()
+//
+//   mock.restore()
+//   // all day, enter dnd-mode
+//   mock.mockReturns(light, 'setDNDMode', undefined)
+//   mock.mockReturns(sound, 'setVolume', undefined)
+//   mock.mockReturns(sound, 'getVolume', 10)
+//   mock.mockReturns(life, 'getCurrentAppId', undefined)
+//   mock.mockReturns(life, 'on', undefined)
+//   option.action = 'close'
+//   startTime = new Date()
+//   endTime = new Date()
+//   option.startTime = `${startTime.getHours()}:00`
+//   option.endTime = `${endTime.getHours()}:00`
+//   nightMode.setOption(option)
+//
+//   tag1 = false
+//   tag2 = false
+//   mock.restore()
+//   // night mode turn on
+//   mock.mockReturns(light, 'setDNDMode', (isNightMode) => {
+//     tag1 = true
+//     t.ok(isNightMode, 'light night mode')
+//   })
+//   mock.mockReturns(sound, 'setVolume', (volume) => {
+//     tag2 = true
+//     t.ok(volume === 10, 'sound night mode')
+//   })
+//   mock.mockReturns(sound, 'getVolume', 50)
+//   mock.mockReturns(life, 'getCurrentAppId', undefined)
+//   mock.mockReturns(life, 'on', undefined)
+//   startTime = (now.getHours() - 1 + 24 + 8) % 24
+//   endTime = (now.getHours() + 1 + 24 + 8) % 24
+//   option = {}
+//   option.action = 'open'
+//   option.startTime = `${startTime}:00`
+//   option.endTime = `${endTime}:59`
+//   nightMode.setOption(option)
+//   console.log(tag1)
+//   t.ok(tag1, 'light not set 1')
+//   t.ok(tag2, 'sound not set 1')
+//
+//   t.end()
+// })
+
