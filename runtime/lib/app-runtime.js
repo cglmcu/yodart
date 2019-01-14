@@ -9,24 +9,15 @@ var inherits = require('util').inherits
 var Url = require('url')
 var querystring = require('querystring')
 var fs = require('fs')
-var childProcess = require('child_process')
-
 var logger = require('logger')('yoda')
-
 var ComponentConfig = require('/etc/yoda/component-config.json')
-
 var _ = require('@yoda/util')._
-var wifi = require('@yoda/wifi')
 var property = require('@yoda/property')
 var system = require('@yoda/system')
 var env = require('@yoda/env')()
 var Loader = require('@yoda/bolero').Loader
 
-var CloudStore = require('./cloudapi')
-var perf = require('./performance')
-
 module.exports = AppRuntime
-perf.stub('init')
 
 /**
  * @memberof yodaRT
@@ -34,25 +25,12 @@ perf.stub('init')
  */
 function AppRuntime () {
   EventEmitter.call(this)
-  this.config = {
-    host: env.cloudgw.wss,
-    port: 443,
-    deviceId: null,
-    deviceTypeId: null,
-    key: null,
-    secret: null
-  }
-
   this.cloudSkillIdStack = []
   this.domain = {
     cut: '',
     scene: '',
     active: ''
   }
-  this.cloudApi = new CloudStore({
-    notify: this.handleCloudEvent.bind(this)
-  })
-  this.shouldWelcome = true
 
   this.componentLoader = new Loader(this, 'component')
   ComponentConfig.paths.forEach(it => {
@@ -90,7 +68,6 @@ AppRuntime.prototype.init = function init () {
   // initializing the whole process...
   this.resetCloudStack()
   this.resetServices()
-  this.shouldWelcome = !this.isStartupFlagExists()
 
   return this.loadApps().then(() => {
     this.inited = true
@@ -107,13 +84,11 @@ AppRuntime.prototype.init = function init () {
         return this.component.light.ttsSound('@system', 'system://firstboot.ogg')
       })
     }
-    if (this.shouldWelcome) {
-      future.then(() => {
-        this.component.light.appSound('@yoda', 'system://boot.ogg')
-        this.component.light.play('@yoda', 'system://boot.js', { fps: 200 })
-      })
-    }
-    this.component.custodian.prepareNetwork()
+    future.then(() => {
+      this.component.light.appSound('@yoda', 'system://boot.ogg')
+      this.component.light.play('@yoda', 'system://boot.js', { fps: 200 })
+    })
+    this.component.custodian.startLogin()
   })
 }
 
@@ -198,22 +173,6 @@ AppRuntime.prototype.startDaemonApps = function startDaemonApps () {
 }
 
 /**
- * Handle cloud events.
- * @private
- */
-AppRuntime.prototype.handleCloudEvent = function handleCloudEvent (code, msg) {
-  logger.debug(`cloud event code=${code} msg=${msg}`)
-  if (this.component.custodian.isRegistering() &&
-    this.component.custodian.isConfiguringNetwork()) {
-    this.openUrl(`yoda-skill://network/cloud_status?code=${code}&msg=${msg}`, {
-      preemptive: false
-    })
-  } else {
-    logger.info('skip send to network.')
-  }
-}
-
-/**
  * Handle power button activation.
  * - if not connected to network yet, disable bluetooth broadcast.
  * - if there are apps actively running, terminates all apps.
@@ -228,7 +187,7 @@ AppRuntime.prototype.handlePowerActivation = function handlePowerActivation () {
    */
   var future = this.resetServices({ lightd: false })
 
-  if (currentAppId == null && !this.component.custodian.isPrepared()) {
+  if (currentAppId == null && !this.component.custodian.isLoggedIn) {
     // guide user to configure network but not start network app directly
     return future.then(() => this.component.light.ttsSound('@yoda', 'system://guide_config_network.ogg'))
   }
@@ -298,15 +257,10 @@ AppRuntime.prototype.wakeup = function wakeup () {
 /**
  * play longPressMic.js if long press mic is bigger than 2 second.
  */
-AppRuntime.prototype.playLongPressMic = function lightLoadFile () {
+AppRuntime.prototype.playLongPressMic = function () {
   this.shouldStopLongPressMicLight = true
   if (this.component.sound.isMuted()) {
     this.component.sound.unmute()
-  }
-
-  // reset network if current is at network app.
-  if (this.component.custodian.isConfiguringNetwork()) {
-    return this.openUrl('yoda-skill://network/renew')
   }
 
   // In order to play sound when currently is muted
@@ -342,30 +296,24 @@ AppRuntime.prototype.stopLongPressMicLight = function stopLongPressMicLight () {
  * @param {object} [options] -
  * @param {boolean} [options.removeAll] - remove local wifi config?
  */
-AppRuntime.prototype.resetNetwork = function resetNetwork (options) {
-  this.shouldStopLongPressMicLight = false
-  // skip if current is at network app
-  if (this.component.custodian.isConfiguringNetwork()) {
-    logger.info('skip reset network when configuring network.')
-    return
-  }
-
-  var deferred = () => {
-    this.component.light.stop('@yoda', '/opt/light/longPressMic.js')
-  }
-
+AppRuntime.prototype.resetNetwork = function () {
   /**
    * reset should welcome so that welcome effect could be played on re-login
    */
-  this.shouldWelcome = true
+  this.shouldStopLongPressMicLight = false
+
   return Promise.all([
     this.component.lifetime.destroyAll(),
     this.setMicMute(false, { silent: true })
-  ]).then(() => this.component.custodian.resetNetwork(options))
-    .then(deferred, err => {
-      logger.error('Unexpected error on resetting network', err.stack)
-      deferred()
-    })
+  ]).then(() => {
+    this.component.custodian.startLogin()
+  }).then(() => {
+    logger.debug('stop long press')
+    this.component.light.stop('@yoda', '/opt/light/longPressMic.js')
+  }, err => {
+    logger.error('Unexpected error on resetting network', err.stack)
+    this.component.light.stop('@yoda', '/opt/light/longPressMic.js')
+  })
 }
 
 /**
@@ -988,8 +936,7 @@ AppRuntime.prototype.onForward = function (message) {
  */
 AppRuntime.prototype.unBindDevice = function () {
   return Promise.resolve().then(() => {
-    this.resetNetwork({ removeAll: true })
-    this.onLogout()
+    this.resetNetwork()
   })
 }
 
@@ -1039,167 +986,4 @@ AppRuntime.prototype.multimediaMethod = function (name, args) {
  */
 AppRuntime.prototype.onGetPropAll = function () {
   return {}
-}
-
-/**
- * @private
- */
-AppRuntime.prototype.reconnect = function () {
-  wifi.resetDns()
-  this.dispatchNotification('on-network-connected', [])
-  logger.log('received the wifi is online, reset DNS config.')
-
-  if (this.component.custodian.isConfiguringNetwork()) {
-    return this.openUrl(`yoda-skill://network/connected`, { preemptive: false })
-  }
-  return this.login()
-}
-
-/**
- * @private
- * @param {object} [options] - the options to login.
- * @param {string} [options.masterId] - the masterId to bind
- */
-AppRuntime.prototype.login = _.singleton(function login (options) {
-  var masterId = _.get(options, 'masterId')
-  var future = Promise.resolve()
-
-  return future.then(() => {
-    logger.info(`recconecting with -> ${masterId}`)
-    // check if logged in and not for reconfiguring network,
-    // just reconnect in background.
-    if (!this.component.custodian.isConfiguringNetwork() &&
-      !masterId && this.component.custodian.isLoggedIn()) {
-      logger.info('no login process is required, just skip and wait for awaking')
-      return
-    }
-
-    // login -> mqtt
-    this.component.custodian.onLogout()
-    return this.cloudApi.connect(masterId)
-      .then((config) => {
-        var opts = Object.assign({ uri: env.speechUri }, config)
-        // TODO: move to use cloudapi?
-        require('@yoda/ota/network').cloudgw = this.cloudApi.cloudgw
-        // FIXME: schedule this update later?
-        this.cloudApi.updateBasicInfo().catch((err) => {
-          logger.error('Unexpected error on updating basic info', err.stack)
-        })
-
-        this.component.flora.updateSpeechPrepareOptions(opts)
-
-        // overwrite `onGetPropAll`.
-        this.onGetPropAll = function onGetPropAll () {
-          return Object.assign({}, config)
-        }
-        this.component.wormhole.setClient(this.cloudApi.mqttcli)
-        var customConfig = _.get(config, 'extraInfo.custom_config')
-        if (customConfig && typeof customConfig === 'string') {
-          this.component.customConfig.onLoadCustomConfig(customConfig)
-        }
-        this.onLoggedIn()
-        this.component.dndMode.recheck()
-      }, (err) => {
-        if (err && err.code === 'BIND_MASTER_REQUIRED') {
-          logger.error('bind master is required, just clear the local and enter network')
-          this.component.custodian.resetNetwork()
-        } else {
-          logger.error('initializing occurs error', err && err.stack)
-        }
-      })
-  })
-})
-
-/**
- * @private
- */
-AppRuntime.prototype.onLoggedIn = function () {
-  this.component.custodian.onLoggedIn()
-
-  var enableTtsService = () => {
-    var config = JSON.stringify(this.onGetPropAll())
-    return this.ttsMethod('connect', [config])
-      .then(res => {
-        if (!res) {
-          logger.log('send CONFIG to ttsd ignore: ttsd service may not start')
-        } else {
-          logger.log(`send CONFIG to ttsd: ${res && res[0]}`)
-        }
-      }, err => {
-        logger.error('send CONFIG to ttsd failed: call method failed', err && err.stack)
-      })
-  }
-
-  var sendReady = () => {
-    var ids = Object.keys(this.component.appScheduler.appMap)
-    return Promise.all(ids.map(it => this.component.lifetime.onLifeCycle(it, 'ready')))
-  }
-
-  var deferred = () => {
-    perf.stub('started')
-    if (this.shouldWelcome) {
-      this.component.dispatcher.delegate('runtimeDidLogin')
-        .then((delegation) => {
-          if (delegation) {
-            return
-          }
-          logger.info('announcing welcome')
-          return this.setMicMute(false, { silent: true })
-        })
-        .then(() => {
-          this.component.light.appSound('@yoda', 'system://startup0.ogg')
-          return this.component.light.play('@yoda', 'system://setWelcome.js')
-        })
-        .then(() => {
-          // not need to play startup music after relogin
-          this.component.light.stop('@yoda', 'system://boot.js')
-        })
-    }
-    this.shouldWelcome = false
-  }
-
-  var onDone = () => {
-    this.dispatchNotification('on-ready', [])
-  }
-
-  return Promise.all([
-    enableTtsService(),
-    sendReady() /** only send ready to currently alive apps */,
-    this.startDaemonApps(),
-    this.setStartupFlag(),
-    this.initiate().then(deferred, err => {
-      logger.error('Unexpected error on bootstrap', err.stack)
-      return deferred()
-    })
-  ]).then(onDone, err => {
-    logger.error('Unexpected error on logged in', err.stack)
-    return onDone()
-  })
-}
-
-/**
- * Set a flag which informs startup service that it is time to boot other services.
- */
-AppRuntime.prototype.setStartupFlag = function setStartupFlag () {
-  return new Promise((resolve, reject) => {
-    /**
-     * intended typo: bootts
-     */
-    childProcess.exec('touch /tmp/.com.rokid.activation.bootts', err => {
-      if (err) {
-        return reject(err)
-      }
-      resolve()
-    })
-  })
-}
-
-/**
- * Determines if startup flag has been set.
- * WARNING: This is a synchronous function.
- *
- * @returns {boolean}
- */
-AppRuntime.prototype.isStartupFlagExists = function isStartupFlagExists () {
-  return fs.existsSync('/tmp/.com.rokid.activation.bootts')
 }

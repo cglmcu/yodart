@@ -9,6 +9,7 @@ var logger = require('logger')('network')
 var EventEmitter = require('events').EventEmitter
 var inherits = require('util').inherits
 var flora = require('@yoda/flora')
+var native = require('./network.node')
 
 module.exports = Network
 
@@ -53,8 +54,15 @@ Network.prototype._initAgent = function () {
 }
 
 Network.prototype._initPing = function () {
-  // TODO: Implement ping with napi
-  this.networkStatus = {state: "CONNECTED"}
+  var fn = function () {
+    if (native.networkStatus() === 0)
+      this.networkStatus = {state: "CONNECTED"}
+    else
+      this.networkStatus = {state: "DISCONNECTED"}
+  }
+
+  fn()
+  setInterval(fn, 5000)
 }
 
 Network.prototype._remoteCall = function (device, command, params) {

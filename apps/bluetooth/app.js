@@ -2,7 +2,6 @@
 
 var bluetooth = require('@yoda/bluetooth')
 var logger = require('logger')('bluetooth-app')
-var wifi = require('@yoda/wifi')
 var util = require('util')
 var _ = require('@yoda/util')._
 var system = require('@yoda/system')
@@ -102,7 +101,7 @@ module.exports = function (activity) {
     logger.debug(`speak: ${text}`)
     if (!textIsEmpty(text)) {
       return activity.setForeground().then(() => {
-        if (wifi.getWifiState() === wifi.WIFI_CONNECTED) {
+        if (property.get('state.network.connected') === 'true') {
           return activity.tts.speak(text, { impatient: false }).catch((err) => {
             logger.error('play tts error: ', err)
           })
