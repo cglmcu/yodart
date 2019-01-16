@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <common.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <curl/curl.h>
 
 #define SERVER_ADDRESS  "www.taobao.com"
@@ -25,7 +26,6 @@ static int ping_net_address(char *addr) {
   if (ret == 0) {
     result = 0;
   } else {
-    printf("Do not worry!!! just ping %s error %d errno %d\n", addr, ret, errno);
     curl = curl_easy_init();
     if (!curl) {
       return -1;
@@ -54,7 +54,15 @@ static napi_value NetworkState(napi_env env, napi_callback_info info) {
   int state = -1;
   napi_value returnVal;
 
-  state = ping_net_address(SERVER_ADDRESS);
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, 0, 0);
+
+  size_t addr_len = 256;
+  char address[addr_len + 1];
+  napi_get_value_string_utf8(env, argv[0], address, addr_len + 1, &addr_len);
+
+  state = ping_net_address(address);
   napi_create_int32(env, state, &returnVal);
 
   return returnVal;
@@ -65,7 +73,6 @@ static napi_value Init(napi_env env, napi_value exports) {
     DECLARE_NAPI_PROPERTY("networkState", NetworkState),
   };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(*desc), desc);
-  NAPI_SET_CONSTANT(exports, WPA_ALL_NETWORK);
   return exports;
 }
 

@@ -3,7 +3,8 @@ var inherits = require('util').inherits
 var EventEmitter = require('events').EventEmitter
 var property = require('@yoda/property')
 var wifi = require('@yoda/wifi')
-var network = require('@yoda/network')
+var Network = require('@yoda/network').Network
+var Ping = require('@yoda/network').Ping
 var bluetooth = require('@yoda/bluetooth')
 var CloudStore = require('../cloudapi')
 var childProcess = require('child_process')
@@ -20,56 +21,38 @@ function Custodian (runtime) {
   this.runtime = runtime
   this.component = runtime.component
 
-  this._networkInitialized = false
-  this._network = null
-  this._initNetwork()
+  this._network = new Network()
+  this._ping = new Ping('device-account.rokid.com')
+  this._pingStatus = {state: "DISCONNECTED"}
+  this._pingInterval = 5000
+  this._initPing()
 
-  this._bluetoothStream = null
-  this._bleTimeout = null
+  this._bluetoothStream = bluetooth.getMessageStream()
+  this._bleTimer = null
   this._initBluetooth()
 
   this.isLoggedIn = false
+  this._loginWaitSecond = 0
   this.cloudApi = new CloudStore({
     notify: this.onCloudEvent.bind(this)
   })
 }
 inherits(Custodian, EventEmitter)
 
-Custodian.prototype._initNetwork = function () {
-  this._network = new network()
-
-  this._network.on('network.status', function (arg1, arg2) {
-    if (!this._networkInitialized && arg1 === 'network' &&
-        arg2.state === "CONNECTED") {
-      logger.debug('network has connected.')
-
-      this._networkInitialized = true
+Custodian.prototype._initPing = function () {
+  this._ping.on('ping.status', function (arg1, arg2) {
+    this._pingStatus = arg2
+    if (this._pingStatus.state === "CONNECTED") {
       property.set('state.network.connected', 'true')
-
-      if (this.component.scheduler) {
-        var appMap = this.component.scheduler.appMap
-        Object.keys(appMap).forEach(key => {
-          var activity = appMap[key]
-          activity.emit('internal:network-connected')
-        })
-      }
-    }
-
-    if (this._networkInitialized && arg1 === 'network' &&
-        arg2.state === "DISCONNECTED") {
-      logger.debug('network has disconnected.')
-
-      this._networkInitialized = false
+    } else {
       property.set('state.network.connected', 'false')
-
-      this.runtime.resetNetwork()
     }
   }.bind(this))
+
+  this._ping.start(this._pingInterval)
 }
 
 Custodian.prototype._initBluetooth = function () {
-  this._bluetoothStream = bluetooth.getMessageStream()
-
   this._bluetoothStream.on('handshaked', () => {
     logger.debug('ble device connected')
     this.component.light.appSound('@yoda', 'system://ble_connected.ogg')
@@ -98,7 +81,6 @@ Custodian.prototype._initBluetooth = function () {
       })
     } else if (message.topic === 'bind') {
       this._network.wifiOpen(message.data.S, message.data.P).then((reply) => {
-        property.set('state.network.connected', 'true')
         this.component.light.appSound('@yoda', 'system://prepare_connect_wifi.ogg')
 
         this._bluetoothStream.write({
@@ -109,9 +91,18 @@ Custodian.prototype._initBluetooth = function () {
 
         // start login flow
         logger.info(`connecting masterId=${message.data.U} is set`)
-        this.login({ masterId: message.data.U })
+        this._loginWaitSecond = 0
+        var fn_login = function () {
+          if (this._loginWaitSecond > this._pingInterval ||
+              this._pingStatus.state === 'CONNECTED') {
+            this.login({ masterId: message.data.U })
+          } else {
+            this._loginWaitSecond += 1000
+            setTimeout(fn_login, 1000)
+          }
+        }.bind(this)
+        setTimeout(fn_login, 1000)
       }, (err) => {
-        property.set('state.network.connected', 'false')
         this.component.light.appSound('@yoda', 'system://wifi/connect_timeout.ogg')
 
         this._bluetoothStream.write({
@@ -124,8 +115,8 @@ Custodian.prototype._initBluetooth = function () {
   }.bind(this))
 }
 
-Custodian.prototype.startLogin = function () {
-  if (this._network.networkStatus.state === "DISCONNECTED") {
+Custodian.prototype.startLogin = function (force) {
+  if (force || this._pingStatus.state === "DISCONNECTED") {
     this._network.wifiStartScan()
     this.openBluetooth()
   } else {
@@ -290,8 +281,8 @@ Custodian.prototype.onCloudEvent = function (code, msg) {
   }
 
   this._network.wifiStopScan()
-  this._bluetoothStream.write({ topic: 'bind', sCode: code, sMsg: msg })
-  clearTimeout(this._bleTimeout)
+  this._bluetoothStream.write({ topic: 'bind', sCode: code.toString(), sMsg: msg })
+  clearTimeout(this._bleTimer)
   setTimeout(() => this._bluetoothStream.end(), 2000)
 }
 
@@ -307,7 +298,7 @@ Custodian.prototype.openBluetooth = function () {
   var BLE_NAME = [ productName, uuid ].join('-')
 
   clearTimeout(this._clearTimeout)
-  this._bleTimeout = setTimeout(() => this._bluetoothStream.end(), 120 * 1000)
+  this._bleTimer = setTimeout(() => this._bluetoothStream.end(), 180 * 1000)
   this._bluetoothStream.start(BLE_NAME, (err) => {
     if (err) {
       logger.error(err && err.stack)

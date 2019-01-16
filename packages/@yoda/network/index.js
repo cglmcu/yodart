@@ -11,7 +11,55 @@ var inherits = require('util').inherits
 var flora = require('@yoda/flora')
 var native = require('./network.node')
 
-module.exports = Network
+/**
+ * Ping
+ */
+
+module.exports.Ping = Ping
+
+function Ping (address) {
+  EventEmitter.call(this)
+  this._intervalFunc = null
+  this._address = 'www.taobao.com'
+  if (address)
+    this._address = address
+}
+inherits(Ping, EventEmitter)
+
+Ping.prototype.ping = function (address) {
+  if (!address)
+    address = this._address
+
+  if (native.networkState(address) == 0)
+    return {state: "CONNECTED"}
+  else
+    return {state: "DISCONNECTED"}
+}
+
+Ping.prototype.start = function (interval, address) {
+  if (!address)
+    address = this._address
+
+  var fn = function () {
+    if (native.networkState(address) == 0)
+      this.emit('ping.status', 'ping', {state: "CONNECTED"})
+    else
+      this.emit('ping.status', 'ping', {state: "DISCONNECTED"})
+  }.bind(this)
+
+  fn()
+  this._intervalFunc = setInterval(fn, interval)
+}
+
+Ping.prototype.stop = function () {
+  clearInterval(this._intervalFunc)
+}
+
+/**
+ * Network
+ */
+
+module.exports.Network = Network
 
 function Network () {
   EventEmitter.call(this)
@@ -19,7 +67,6 @@ function Network () {
   this.wifiStatus = {state: "DISCONNECTED"}
   this.ethernetStatus = {state: "DISCONNECTED"}
   this.modemStatus = {state: "DISCONNECTED"}
-  this.networkStatus = {state: "DISCONNECTED"}
 
   this._remoteCallTarget = "net_manager"
   this._remoteCallCommand = "network.command"
@@ -27,8 +74,6 @@ function Network () {
 
   this._agent = null
   this._initAgent()
-
-  this._initPing()
 }
 inherits(Network, EventEmitter)
 
@@ -51,18 +96,6 @@ Network.prototype._initAgent = function () {
   })
 
   this._agent.start()
-}
-
-Network.prototype._initPing = function () {
-  var fn = function () {
-    if (native.networkStatus() === 0)
-      this.networkStatus = {state: "CONNECTED"}
-    else
-      this.networkStatus = {state: "DISCONNECTED"}
-  }
-
-  fn()
-  setInterval(fn, 5000)
 }
 
 Network.prototype._remoteCall = function (device, command, params) {

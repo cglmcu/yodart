@@ -306,7 +306,7 @@ AppRuntime.prototype.resetNetwork = function () {
     this.component.lifetime.destroyAll(),
     this.setMicMute(false, { silent: true })
   ]).then(() => {
-    this.component.custodian.startLogin()
+    this.component.custodian.startLogin(true)
   }).then(() => {
     logger.debug('stop long press')
     this.component.light.stop('@yoda', '/opt/light/longPressMic.js')
