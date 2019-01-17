@@ -2,11 +2,11 @@ var logger = require('logger')('custodian')
 var inherits = require('util').inherits
 var EventEmitter = require('events').EventEmitter
 var property = require('@yoda/property')
-var wifi = require('@yoda/wifi')
 var Network = require('@yoda/network').Network
 var Ping = require('@yoda/network').Ping
 var bluetooth = require('@yoda/bluetooth')
 var CloudStore = require('../cloudapi')
+var fs = require('fs')
 var childProcess = require('child_process')
 var _ = require('@yoda/util')._
 var env = require('@yoda/env')()
@@ -23,7 +23,7 @@ function Custodian (runtime) {
 
   this._network = new Network()
   this._ping = new Ping('device-account.rokid.com')
-  this._pingStatus = {state: "DISCONNECTED"}
+  this._pingStatus = {state: 'DISCONNECTED'}
   this._pingInterval = 5000
   this._initPing()
 
@@ -42,7 +42,7 @@ inherits(Custodian, EventEmitter)
 Custodian.prototype._initPing = function () {
   this._ping.on('ping.status', function (arg1, arg2) {
     this._pingStatus = arg2
-    if (this._pingStatus.state === "CONNECTED") {
+    if (this._pingStatus.state === 'CONNECTED') {
       property.set('state.network.connected', 'true')
     } else {
       property.set('state.network.connected', 'false')
@@ -116,7 +116,7 @@ Custodian.prototype._initBluetooth = function () {
 }
 
 Custodian.prototype.startLogin = function (force) {
-  if (force || this._pingStatus.state === "DISCONNECTED") {
+  if (force || this._pingStatus.state === 'DISCONNECTED') {
     this._network.wifiStartScan()
     this.openBluetooth()
   } else {
@@ -258,30 +258,30 @@ Custodian.prototype.onLoginFailed = function () {
  * -202 bind failed
  */
 Custodian.prototype.onCloudEvent = function (code, msg) {
-  code = parseInt(code)
   logger.debug(`cloud event code=${code} msg=${msg}`)
 
-  if (code === 100) {
+  var _code = parseInt(code)
+  if (_code === 100) {
     logger.info('logging ...')
     return
-  } else if (code === 101) {
+  } else if (_code === 101) {
     logger.info('login success')
     return
-  } else if (code === 201) {
+  } else if (_code === 201) {
     logger.info('bind master success')
     this.onLoginSuccess()
-  } else if (code === -101) {
+  } else if (_code === -101) {
     logger.info('login failed')
-    this.component.light.appSound("@yada", "system://wifi/login_failed.ogg")
+    this.component.light.appSound('@yada', 'system://wifi/login_failed.ogg')
     this.onLoginFailed()
-  } else if (code === -202) {
+  } else if (_code === -202) {
     logger.info('bind master failed')
-    this.component.light.appSound("@yoda", "system://wifi/bind_master_failed.ogg")
+    this.component.light.appSound('@yoda', 'system://wifi/bind_master_failed.ogg')
     this.onLoginFailed()
   }
 
   this._network.wifiStopScan()
-  this._bluetoothStream.write({ topic: 'bind', sCode: code.toString(), sMsg: msg })
+  this._bluetoothStream.write({ topic: 'bind', sCode: code, sMsg: msg })
   this.component.light.stop('@yoda', 'system://setStandby.js')
   clearTimeout(this._bleTimer)
   setTimeout(() => this._bluetoothStream.end(), 2000)
@@ -318,8 +318,7 @@ Custodian.prototype.openBluetooth = function () {
 
 // MARK: - Interception
 Custodian.prototype.turenDidWakeUp = function () {
-  if (this.isLoggedIn)
-    return
+  if (this.isLoggedIn) { return }
 
   logger.warn('Network not connected, preparing to announce unavailability.')
   this.component.turen.pickup(false)

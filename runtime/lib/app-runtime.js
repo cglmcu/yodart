@@ -8,13 +8,11 @@ var EventEmitter = require('events').EventEmitter
 var inherits = require('util').inherits
 var Url = require('url')
 var querystring = require('querystring')
-var fs = require('fs')
 var logger = require('logger')('yoda')
 var ComponentConfig = require('/etc/yoda/component-config.json')
 var _ = require('@yoda/util')._
 var property = require('@yoda/property')
 var system = require('@yoda/system')
-var env = require('@yoda/env')()
 var Loader = require('@yoda/bolero').Loader
 
 module.exports = AppRuntime
