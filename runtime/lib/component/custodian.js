@@ -21,7 +21,7 @@ function Custodian (runtime) {
   this.runtime = runtime
   this.component = runtime.component
 
-  this._network = new Network()
+  this._network = new Network(this.component.flora)
   this._ping = new Ping('device-account.rokid.com')
   this._pingStatus = {state: 'DISCONNECTED'}
   this._pingInterval = 5000

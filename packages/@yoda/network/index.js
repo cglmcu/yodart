@@ -7,7 +7,6 @@
 
 var EventEmitter = require('events').EventEmitter
 var inherits = require('util').inherits
-var flora = require('@yoda/flora')
 var native = require('./network.node')
 
 /**
@@ -59,7 +58,7 @@ Ping.prototype.stop = function () {
 
 module.exports.Network = Network
 
-function Network () {
+function Network (flora) {
   EventEmitter.call(this)
 
   this.wifiStatus = {state: 'DISCONNECTED'}
@@ -70,30 +69,26 @@ function Network () {
   this._remoteCallCommand = 'network.command'
   this._remoteCallTimeout = 60 * 1000
 
-  this._agent = null
-  this._initAgent()
+  this._flora = flora
+  this._initFlora()
 }
 inherits(Network, EventEmitter)
 
-Network.prototype._initAgent = function () {
-  this._agent = new flora.Agent('unix:/var/run/flora.sock')
+Network.prototype._initFlora = function () {
+  this._flora.subscribe('network.status', (caps, type) => {
+    var msg = JSON.parse(caps[0])
 
-  this._agent.subscribe('network.status', (msg, type) => {
-    var _msg = JSON.parse(msg[0])
-
-    if (_msg.wifi) {
-      this.wifiStatus = _msg.wifi
-      this.emit('network.status', 'wifi', _msg.wifi)
-    } else if (_msg.ethernet) {
-      this.ethernetStatus = _msg.ethernet
-      this.emit('network.status', 'ethernet', _msg.ethernet)
-    } else if (_msg.modem) {
-      this.modemStatus = _msg.modem
-      this.emit('network.status', 'modem', _msg.modem)
+    if (msg.wifi) {
+      this.wifiStatus = msg.wifi
+      this.emit('network.status', 'wifi', msg.wifi)
+    } else if (msg.ethernet) {
+      this.ethernetStatus = msg.ethernet
+      this.emit('network.status', 'ethernet', msg.ethernet)
+    } else if (msg.modem) {
+      this.modemStatus = msg.modem
+      this.emit('network.status', 'modem', msg.modem)
     }
   })
-
-  this._agent.start()
 }
 
 Network.prototype._remoteCall = function (device, command, params) {
@@ -103,7 +98,7 @@ Network.prototype._remoteCall = function (device, command, params) {
   }
   if (params) { data.params = params }
 
-  return this._agent.call(
+  return this._flora.call(
     this._remoteCallCommand,
     [JSON.stringify(data)],
     this._remoteCallTarget,

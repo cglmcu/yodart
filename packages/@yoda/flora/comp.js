@@ -60,6 +60,10 @@ FloraComp.prototype.subscribe = function subscribe (name, handler) {
   return this.agent.subscribe(name, handler)
 }
 
+FloraComp.prototype.call = function call (name, msg, target, timeout) {
+  return this.agent.call(name, msg, target, timeout)
+}
+
 FloraComp.prototype.declareMethod = function declareMethod (name, handler) {
   return this.agent.declareMethod(name, handler)
 }
