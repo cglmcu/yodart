@@ -282,6 +282,7 @@ Custodian.prototype.onCloudEvent = function (code, msg) {
 
   this._network.wifiStopScan()
   this._bluetoothStream.write({ topic: 'bind', sCode: code.toString(), sMsg: msg })
+  this.component.light.stop('@yoda', 'system://setStandby.js')
   clearTimeout(this._bleTimer)
   setTimeout(() => this._bluetoothStream.end(), 2000)
 }
@@ -298,7 +299,10 @@ Custodian.prototype.openBluetooth = function () {
   var BLE_NAME = [ productName, uuid ].join('-')
 
   clearTimeout(this._clearTimeout)
-  this._bleTimer = setTimeout(() => this._bluetoothStream.end(), 180 * 1000)
+  this._bleTimer = setTimeout(() => {
+    this.component.light.stop('@yoda', 'system://setStandby.js')
+    this._bluetoothStream.end()
+  }, 180 * 1000)
   this._bluetoothStream.start(BLE_NAME, (err) => {
     if (err) {
       logger.error(err && err.stack)
