@@ -120,7 +120,7 @@ DBus.prototype.extapp = {
     out: ['b'],
     fn: function register (appId, objectPath, ifaceName, cb) {
       logger.info('dbus registering app', appId, objectPath, ifaceName)
-      if (!this.component.custodian.isLoggedIn) {
+      if (!this.component.auth.isLoggedIn) {
         /** prevent app to invoke runtime methods if runtime is not logged in yet */
         return cb(null, false)
       }
@@ -330,7 +330,7 @@ DBus.prototype.amsexport = {
     in: [],
     out: [],
     fn: function Relogin (cb) {
-      this.component.custodian.startLogin()
+      this.component.auth.startLogin()
         .then(
           () => {
             cb()

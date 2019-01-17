@@ -86,7 +86,7 @@ AppRuntime.prototype.init = function init () {
       this.component.light.appSound('@yoda', 'system://boot.ogg')
       this.component.light.play('@yoda', 'system://boot.js', { fps: 200 })
     })
-    this.component.custodian.startLogin()
+    this.component.auth.startLogin()
   })
 }
 
@@ -185,7 +185,7 @@ AppRuntime.prototype.handlePowerActivation = function handlePowerActivation () {
    */
   var future = this.resetServices({ lightd: false })
 
-  if (currentAppId == null && !this.component.custodian.isLoggedIn) {
+  if (currentAppId == null && !this.component.auth.isLoggedIn) {
     // guide user to configure network but not start network app directly
     return future.then(() => this.component.light.ttsSound('@yoda', 'system://guide_config_network.ogg'))
   }
@@ -304,7 +304,7 @@ AppRuntime.prototype.resetNetwork = function () {
     this.component.lifetime.destroyAll(),
     this.setMicMute(false, { silent: true })
   ]).then(() => {
-    this.component.custodian.startLogin(true)
+    this.component.auth.startLogin(true)
   }).then(() => {
     logger.debug('stop long press')
     this.component.light.stop('@yoda', '/opt/light/longPressMic.js')

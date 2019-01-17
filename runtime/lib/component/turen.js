@@ -425,7 +425,7 @@ Turen.prototype.handleMaliciousNlpResult = function handleMaliciousNlpResult () 
     logger.warn(`discarding malicious nlp result for pick up discarded.`)
     return
   }
-  if (!this.component.custodian.isLoggedIn) {
+  if (!this.component.auth.isLoggedIn) {
     logger.warn('Network not connected, recovering players.')
     return this.recoverPausedOnAwaken()
   }
@@ -459,7 +459,7 @@ Turen.prototype.handleSpeechError = function handleSpeechError (errCode) {
     logger.warn(`discarding speech error(${errCode}) for pick up discarded.`)
     return
   }
-  if (!this.component.custodian.isLoggedIn) {
+  if (!this.component.auth.isLoggedIn) {
     logger.warn('Network not connected or not logged in, recovering players.')
     return this.recoverPausedOnAwaken()
   }
