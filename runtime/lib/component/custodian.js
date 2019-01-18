@@ -47,53 +47,74 @@ Custodian.prototype._initBluetooth = function () {
   this._bluetoothStream.on('data', function (message) {
     logger.debug(message)
 
-    if (message.topic === 'getWifiList') {
+    var authLogin = () => {
+      logger.info(`connecting masterId=${message.data.U} is set`)
+      var loginWaitSecond = 0
+      var fn_login = function () {
+        if (loginWaitSecond > this._pingInterval ||
+            this._pingStatus.state === 'CONNECTED') {
+          this.component.auth.login({ masterId: message.data.U })
+        } else {
+          loginWaitSecond += 1000
+          setTimeout(fn_login, 1000)
+        }
+      }.bind(this)
+      setTimeout(fn_login, 1000)
+    }
+
+    if (message.topic === 'getCapacities') {
+      this._network.capacities().then((reply) => {
+        var msg = JSON.parse(reply.msg[0])
+        this._bluetoothStream.write({topic: 'getCapacities', data: msg})
+      })
+
+    } else if (message.topic === 'getWifiList') {
       this._network.wifiScanList().then((reply) => {
         var msg = JSON.parse(reply.msg[0])
 
         var wifiList = msg.wifilist.map((item) => {
-          return {
-            S: item.SSID,
-            L: item.SIGNAL
-          }
+          return {S: item.SSID, L: item.SIGNAL}
         })
 
-        logger.debug('send WIFI List to App: ', JSON.stringify(wifiList))
         this._bluetoothStream.write({topic: 'getWifiList', data: wifiList})
       })
+
     } else if (message.topic === 'bind') {
       this._network.wifiOpen(message.data.S, message.data.P).then((reply) => {
         property.set('persist.netmanager.wifi', 'true')
-        this.component.light.appSound('@yoda', 'system://prepare_connect_wifi.ogg')
+        this.component.light.appSound(
+          '@yoda', 'system://prepare_connect_wifi.ogg')
+        this._bluetoothStream.write(
+          {topic: 'bind', sCode: '11', sMsg: 'wifi连接成功'})
 
-        this._bluetoothStream.write({
-          topic: 'bind',
-          sCode: '11',
-          sMsg: 'wifi连接成功'
-        })
-
-        // start login flow
-        logger.info(`connecting masterId=${message.data.U} is set`)
-        var loginWaitSecond = 0
-        var fn_login = function () {
-          if (loginWaitSecond > this._pingInterval ||
-              this._pingStatus.state === 'CONNECTED') {
-            this.component.auth.login({ masterId: message.data.U })
-          } else {
-            loginWaitSecond += 1000
-            setTimeout(fn_login, 1000)
-          }
-        }.bind(this)
-        setTimeout(fn_login, 1000)
+        authLogin()
       }, (err) => {
         property.set('persist.netmanager.wifi', 'false')
-        this.component.light.appSound('@yoda', 'system://wifi/connect_timeout.ogg')
+        this.component.light.appSound(
+          '@yoda', 'system://wifi/connect_timeout.ogg')
+        this._bluetoothStream.write(
+          {topic: 'bind', sCode: '-12', sMsg: 'wifi连接超时'})
+      })
 
-        this._bluetoothStream.write({
-          topic: 'bind',
-          sCode: '-12',
-          sMsg: 'wifi连接超时'
-        })
+    } else if (message.topic === 'bindModem') {
+      this._network.modemOpen().then((reply) => {
+        property.set('persist.netmanager.modem', 'true')
+        // FIXME: play modem/connect_failed.ogg instead
+        this.component.light.appSound(
+          '@yoda', 'system://prepare_connect_wifi.ogg')
+        this._bluetoothStream.write(
+          {topic: 'bindModem', sCode: '11', sMsg: 'modem连接成功'})
+
+        if (!this.component.auth.isLoggedIn) {
+          authLogin()
+        }
+      }, (err) => {
+        property.set('persist.netmanager.modem', 'false')
+        // FIXME: play modem/connect_failed.ogg instead
+        this.component.light.appSound(
+          '@yoda', 'system://wifi/connect_timeout.ogg')
+        this._bluetoothStream.write(
+          {topic: 'bindModem', sCode: '-12', sMsg: 'modem连接失败'})
       })
     }
   }.bind(this))
@@ -109,6 +130,7 @@ Custodian.prototype.openBluetooth = function () {
     this.component.light.stop('@yoda', 'system://setStandby.js')
     this._bluetoothStream.end()
   }, 180 * 1000)
+
   this._bluetoothStream.start(BLE_NAME, (err) => {
     if (err) {
       logger.error(err && err.stack)
@@ -116,7 +138,8 @@ Custodian.prototype.openBluetooth = function () {
     } else {
       logger.info('open ble success, name', BLE_NAME)
       this.component.light.appSound('@yoda', 'system://wifi/setup_network.ogg')
-      this.component.light.play('@yoda', 'system://setStandby.js', {}, { shouldResume: true })
+      this.component.light.play(
+        '@yoda', 'system://setStandby.js', {}, { shouldResume: true })
     }
     // FIXME(Yorkie): needs tell bind is unavailable?
   })
