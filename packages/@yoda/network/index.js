@@ -6,56 +6,6 @@
  */
 
 var EventEmitter = require('events').EventEmitter
-var native = require('./network.node')
-
-/**
- * Ping
- */
-
-class Ping extends EventEmitter {
-  constructor (address) {
-    super()
-
-    this._intervalFunc = null
-    this._address = 'www.taobao.com'
-    if (address) { this._address = address }
-  }
-
-  ping (address) {
-    if (!address) { address = this._address }
-
-    if (native.networkState(address) === 0) {
-      return {state: 'CONNECTED'}
-    } else {
-      return {state: 'DISCONNECTED'}
-    }
-  }
-
-  start (interval, address) {
-    if (!address) { address = this._address }
-
-    var fn = function () {
-      if (native.networkState(address) === 0) {
-        this.emit('ping.status', 'ping', {state: 'CONNECTED'})
-      } else {
-        this.emit('ping.status', 'ping', {state: 'DISCONNECTED'})
-      }
-    }.bind(this)
-
-    fn()
-    this._intervalFunc = setInterval(fn, interval)
-  }
-
-  stop () {
-    clearInterval(this._intervalFunc)
-  }
-}
-
-module.exports.Ping = Ping
-
-/**
- * Network
- */
 
 class Network extends EventEmitter {
   constructor (flora) {
