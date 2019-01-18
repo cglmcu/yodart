@@ -22,7 +22,7 @@ function Auth (runtime) {
 }
 
 Auth.prototype.startLogin = function (force) {
-  if (force || this.component.custodian._pingStatus.state === 'DISCONNECTED') {
+  if (force || !this.component.custodian.isNetworkConnected()) {
     this.component.custodian._network.wifiStartScan()
     this.component.custodian.openBluetooth()
   } else {

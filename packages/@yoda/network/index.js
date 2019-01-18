@@ -61,6 +61,7 @@ class Network extends EventEmitter {
   constructor (flora) {
     super()
 
+    this.networkStatus = {state: 'DISCONNECTED'}
     this.wifiStatus = {state: 'DISCONNECTED'}
     this.ethernetStatus = {state: 'DISCONNECTED'}
     this.modemStatus = {state: 'DISCONNECTED'}
@@ -76,7 +77,10 @@ class Network extends EventEmitter {
     this._flora.subscribe('network.status', (caps, type) => {
       var msg = JSON.parse(caps[0])
 
-      if (msg.wifi) {
+      if (msg.network) {
+        this.networkStatus = msg.network
+        this.emit('network.status', 'network', msg.network)
+      } else if (msg.wifi) {
         this.wifiStatus = msg.wifi
         this.emit('network.status', 'wifi', msg.wifi)
       } else if (msg.ethernet) {
@@ -102,6 +106,10 @@ class Network extends EventEmitter {
       this._remoteCallTarget,
       this._remoteCallTimeout
     )
+  }
+
+  triggerStatus () {
+    return this._remoteCall('NETWORK', 'TRIGGER_STATUS')
   }
 
   capacities () {

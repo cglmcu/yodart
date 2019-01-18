@@ -86,7 +86,10 @@ AppRuntime.prototype.init = function init () {
       this.component.light.appSound('@yoda', 'system://boot.ogg')
       this.component.light.play('@yoda', 'system://boot.js', { fps: 200 })
     })
-    this.component.auth.startLogin()
+
+    this.component.custodian.waitNetworkInitialized().then(
+      this.component.auth.startLogin()
+    )
   })
 }
 

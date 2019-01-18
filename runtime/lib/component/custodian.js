@@ -1,7 +1,6 @@
 var logger = require('logger')('custodian')
 var property = require('@yoda/property')
 var Network = require('@yoda/network').Network
-var Ping = require('@yoda/network').Ping
 var bluetooth = require('@yoda/bluetooth')
 
 module.exports = Custodian
@@ -11,27 +10,48 @@ function Custodian (runtime) {
   this.component = runtime.component
 
   this._network = new Network(this.component.flora)
-  this._ping = new Ping('device-account.rokid.com')
-  this._pingStatus = {state: 'DISCONNECTED'}
-  this._pingInterval = 5000
-  this._initPing()
+  this._networkStatus = {state: 'DISCONNECTED'}
+  this._networkInitialized = false
+  this._initNetwork()
 
   this._bluetoothStream = bluetooth.getMessageStream()
   this._bleTimer = null
   this._initBluetooth()
 }
 
-Custodian.prototype._initPing = function () {
-  this._ping.on('ping.status', function (arg1, arg2) {
-    this._pingStatus = arg2
-    if (this._pingStatus.state === 'CONNECTED') {
+Custodian.prototype._initNetwork = function () {
+  this._network.on('network.status', function (arg1, arg2) {
+    if (!this._networkInitialized) {
+      this._networkInitialized = true
+    }
+
+    if (arg1 !== 'network') { return }
+
+    this._networkStatus = arg2
+    if (this._networkStatus.state === 'CONNECTED') {
       property.set('state.network.connected', 'true')
     } else {
       property.set('state.network.connected', 'false')
     }
   }.bind(this))
 
-  this._ping.start(this._pingInterval)
+  this._network.init()
+  this._network.triggerStatus()
+}
+
+Custodian.prototype.waitNetworkInitialized = function () {
+  return new Promise(function (resolv, reject) {
+    var timer = setInterval(() => {
+      if (this._networkInitialized) {
+        clearInterval(timer)
+        resolve()
+      }
+    }, 500)
+  })
+}
+
+Custodian.prototype.isNetworkConnected = function () {
+  return this._networkStatus.state === 'CONNECTED'
 }
 
 Custodian.prototype._initBluetooth = function () {
@@ -50,16 +70,19 @@ Custodian.prototype._initBluetooth = function () {
     var authLogin = () => {
       logger.info(`connecting masterId=${message.data.U} is set`)
       var loginWaitSecond = 0
+      var loginWaitSecondMax = 5000
       var fn_login = function () {
-        if (loginWaitSecond > this._pingInterval ||
-            this._pingStatus.state === 'CONNECTED') {
+        if (loginWaitSecond > loginWaitSecondMax ||
+            this._networkStatus.state === 'CONNECTED') {
           this.component.auth.login({ masterId: message.data.U })
         } else {
           loginWaitSecond += 1000
           setTimeout(fn_login, 1000)
+          this._network.triggerStatus()
         }
       }.bind(this)
       setTimeout(fn_login, 1000)
+      this._network.triggerStatus()
     }
 
     if (message.topic === 'getCapacities') {
@@ -81,7 +104,8 @@ Custodian.prototype._initBluetooth = function () {
 
     } else if (message.topic === 'bind') {
       this._network.wifiOpen(message.data.S, message.data.P).then((reply) => {
-        property.set('persist.netmanager.wifi', 'true')
+        property.set('persist.netmanager.wifi', 1)
+        property.set('persist.netmanager.wifi_ap', 0)
         this.component.light.appSound(
           '@yoda', 'system://prepare_connect_wifi.ogg')
         this._bluetoothStream.write(
@@ -89,7 +113,7 @@ Custodian.prototype._initBluetooth = function () {
 
         authLogin()
       }, (err) => {
-        property.set('persist.netmanager.wifi', 'false')
+        property.set('persist.netmanager.wifi', 0)
         this.component.light.appSound(
           '@yoda', 'system://wifi/connect_timeout.ogg')
         this._bluetoothStream.write(
