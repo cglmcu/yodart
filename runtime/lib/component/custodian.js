@@ -63,6 +63,7 @@ Custodian.prototype._initBluetooth = function () {
       })
     } else if (message.topic === 'bind') {
       this._network.wifiOpen(message.data.S, message.data.P).then((reply) => {
+        property.set('persist.netmanager.wifi', 'true')
         this.component.light.appSound('@yoda', 'system://prepare_connect_wifi.ogg')
 
         this._bluetoothStream.write({
@@ -85,6 +86,7 @@ Custodian.prototype._initBluetooth = function () {
         }.bind(this)
         setTimeout(fn_login, 1000)
       }, (err) => {
+        property.set('persist.netmanager.wifi', 'false')
         this.component.light.appSound('@yoda', 'system://wifi/connect_timeout.ogg')
 
         this._bluetoothStream.write({
