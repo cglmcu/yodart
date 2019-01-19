@@ -15,20 +15,11 @@ function Auth (runtime) {
   this.runtime = runtime
   this.component = runtime.component
 
+  this.isLogging = false
   this.isLoggedIn = false
   this.cloudApi = new CloudStore({
     notify: this.onCloudEvent.bind(this)
   })
-}
-
-Auth.prototype.startLogin = function (force) {
-  if (force || !this.component.custodian.isNetworkConnected()) {
-    this.component.custodian._network.wifiStartScan()
-    this.component.custodian.openBluetooth()
-  } else {
-    this.runtime.dispatchNotification('on-network-connected', [])
-    this.login()
-  }
 }
 
 /**
@@ -37,6 +28,8 @@ Auth.prototype.startLogin = function (force) {
  * @param {string} [options.masterId] - the masterId to bind
  */
 Auth.prototype.login = _.singleton(function (options) {
+  this.isLogging = true
+
   var masterId = _.get(options, 'masterId')
   var future = Promise.resolve()
 
@@ -46,6 +39,7 @@ Auth.prototype.login = _.singleton(function (options) {
     // just reconnect in background.
     if (!masterId && this.isLoggedIn) {
       logger.info('no login process is required, just skip and wait for awaking')
+      this.isLogging = false
       return
     }
 
@@ -74,6 +68,8 @@ Auth.prototype.login = _.singleton(function (options) {
         this.component.customConfig.onLoadCustomConfig(customConfig)
       }
       this.component.dndMode.recheck()
+
+      this.isLogging = false
     }, (err) => {
       if (err && err.code === 'BIND_MASTER_REQUIRED') {
         logger.error('bind master is required, just clear the local and enter network')
@@ -81,6 +77,8 @@ Auth.prototype.login = _.singleton(function (options) {
       } else {
         logger.error('initializing occurs error', err && err.stack)
       }
+
+      this.isLogging = false
     })
   })
 })

@@ -330,7 +330,7 @@ DBus.prototype.amsexport = {
     in: [],
     out: [],
     fn: function Relogin (cb) {
-      this.component.auth.startLogin()
+      this.component.auth.login()
         .then(
           () => {
             cb()

@@ -86,10 +86,6 @@ AppRuntime.prototype.init = function init () {
       this.component.light.appSound('@yoda', 'system://boot.ogg')
       this.component.light.play('@yoda', 'system://boot.js', { fps: 200 })
     })
-
-    this.component.custodian.waitNetworkInitialized().then(
-      this.component.auth.startLogin()
-    )
   })
 }
 
@@ -307,7 +303,8 @@ AppRuntime.prototype.resetNetwork = function () {
     this.component.lifetime.destroyAll(),
     this.setMicMute(false, { silent: true })
   ]).then(() => {
-    this.component.auth.startLogin(true)
+    this.component.custodian._network.wifiStartScan()
+    this.component.custodian.openBluetooth()
   }).then(() => {
     logger.debug('stop long press')
     this.component.light.stop('@yoda', '/opt/light/longPressMic.js')

@@ -8,10 +8,10 @@ module.exports = Custodian
 function Custodian (runtime) {
   this.runtime = runtime
   this.component = runtime.component
+  this._masterId = null
 
   this._network = new Network(this.component.flora)
   this._networkStatus = {state: 'DISCONNECTED'}
-  this._networkInitialized = false
   this._initNetwork()
 
   this._bluetoothStream = bluetooth.getMessageStream()
@@ -21,15 +21,23 @@ function Custodian (runtime) {
 
 Custodian.prototype._initNetwork = function () {
   this._network.on('network.status', function (arg1, arg2) {
-    if (!this._networkInitialized) {
-      this._networkInitialized = true
-    }
-
     if (arg1 !== 'network') { return }
 
     this._networkStatus = arg2
     if (this._networkStatus.state === 'CONNECTED') {
       property.set('state.network.connected', 'true')
+
+      /*
+       * Start login when received message that network has connected
+       */
+      if (!this.component.auth.isLoggedIn && !this.component.auth.isLogging) {
+        logger.info(`connecting masterId=${this._masterId} is set`)
+        if (this._masterId) {
+          this.component.auth.login({ masterId: this._masterId })
+        } else {
+          this.component.auth.login()
+        }
+      }
     } else {
       property.set('state.network.connected', 'false')
     }
@@ -37,17 +45,6 @@ Custodian.prototype._initNetwork = function () {
 
   this._network.init()
   this._network.triggerStatus()
-}
-
-Custodian.prototype.waitNetworkInitialized = function () {
-  return new Promise(function (resolv, reject) {
-    var timer = setInterval(() => {
-      if (this._networkInitialized) {
-        clearInterval(timer)
-        resolve()
-      }
-    }, 500)
-  })
 }
 
 Custodian.prototype.isNetworkConnected = function () {
@@ -67,24 +64,6 @@ Custodian.prototype._initBluetooth = function () {
   this._bluetoothStream.on('data', function (message) {
     logger.debug(message)
 
-    var authLogin = () => {
-      logger.info(`connecting masterId=${message.data.U} is set`)
-      var loginWaitSecond = 0
-      var loginWaitSecondMax = 5000
-      var fn_login = function () {
-        if (loginWaitSecond > loginWaitSecondMax ||
-            this._networkStatus.state === 'CONNECTED') {
-          this.component.auth.login({ masterId: message.data.U })
-        } else {
-          loginWaitSecond += 1000
-          setTimeout(fn_login, 1000)
-          this._network.triggerStatus()
-        }
-      }.bind(this)
-      setTimeout(fn_login, 1000)
-      this._network.triggerStatus()
-    }
-
     if (message.topic === 'getCapacities') {
       this._network.capacities().then((reply) => {
         var msg = JSON.parse(reply.msg[0])
@@ -103,6 +82,7 @@ Custodian.prototype._initBluetooth = function () {
       })
 
     } else if (message.topic === 'bind') {
+      this.runtime.dispatchNotification('on-network-connected', [])
       this._network.wifiOpen(message.data.S, message.data.P).then((reply) => {
         property.set('persist.netmanager.wifi', 1)
         property.set('persist.netmanager.wifi_ap', 0)
@@ -111,7 +91,12 @@ Custodian.prototype._initBluetooth = function () {
         this._bluetoothStream.write(
           {topic: 'bind', sCode: '11', sMsg: 'wifi连接成功'})
 
-        authLogin()
+        /**
+         * reset isLoggedIn and networkStatus to trigger login
+         */
+        this._masterId = message.data.U
+        this.component.auth.isLoggedIn = false
+        this._networkStatus.state = 'DISCONNECTED'
       }, (err) => {
         property.set('persist.netmanager.wifi', 0)
         this.component.light.appSound(
@@ -129,9 +114,6 @@ Custodian.prototype._initBluetooth = function () {
         this._bluetoothStream.write(
           {topic: 'bindModem', sCode: '11', sMsg: 'modem连接成功'})
 
-        if (!this.component.auth.isLoggedIn) {
-          authLogin()
-        }
       }, (err) => {
         property.set('persist.netmanager.modem', 'false')
         // FIXME: play modem/connect_failed.ogg instead
