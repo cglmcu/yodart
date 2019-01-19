@@ -66,6 +66,10 @@ class Network extends EventEmitter {
     return this._remoteCall('NETWORK', 'GET_CAPACITY')
   }
 
+  getStatus (device) {
+    return this._remoteCall(device, 'GET_STATUS')
+  }
+
   wifiOpen (ssid, passwd) {
     return this._remoteCall('WIFI', 'CONNECT', {'SSID': ssid, 'PASSWD': passwd})
   }
