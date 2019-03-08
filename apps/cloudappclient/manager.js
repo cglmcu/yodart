@@ -11,6 +11,7 @@ function Manager (exe, Skill) {
   EventEmitter.call(this)
   this.exe = exe
   this.Skill = Skill
+  this.eventRequest = eventRequest
   this.skills = []
   this.isAppActive = true
   // for gsensor roll in back,like strongpause
@@ -44,6 +45,7 @@ Manager.prototype.onrequest = function (nlp, action) {
       logger.log('there is no skill to run, emit [empty] event because directive is empty!')
       this.emit('empty')
     } else {
+      logger.log('try to resume current skill')
       this.resume()
     }
     return
@@ -99,7 +101,7 @@ Manager.prototype.append = function (nlp, action) {
   var pos = this.findByAppId(action.appId)
   if (pos > -1) {
     logger.log(`skill ${action.appId}  index ${pos} append request`)
-    this.skills[pos].onrequest(action)
+    this.skills[pos].onrequest(action, true)
   } else {
     logger.log(`skill ${action.appId} not in stack, append ignore`)
   }
@@ -148,12 +150,10 @@ Manager.prototype.pause = function () {
 Manager.prototype.resume = function () {
   this.isAppActive = true
   var cur = this.getCurrentSkill()
-  // if top app is not self,do not resume immediately
-  if (cur.paused === false) {
-    return
-  }
   if (cur !== false) {
     cur.emit('resume')
+  } else {
+    logger.log('not found skill, skipping resume skill')
   }
 }
 
@@ -200,7 +200,7 @@ Manager.prototype.sendEventRequest = function (type, name, data, args, cb) {
     logger.log('ignored eventRequest, because it is no appId given')
     return cb && cb()
   }
-  if ((type === 'tts' || type === 'media') && name === 'cancel' && this.isAppActive) {
+  if (type === 'tts' && name === 'cancel' && this.isAppActive) {
     if (this.getCurrentSkill().appId === data.appId) {
       logger.info(`ignored ${type} cancel eventRequest, because currently skill cancel it self`)
       cb && cb()
@@ -213,7 +213,11 @@ Manager.prototype.sendEventRequest = function (type, name, data, args, cb) {
     return
   }
   if (type === 'tts') {
-    eventRequest.ttsEvent(eventRequestMap[type][name], data.appId, args, (response) => {
+    this.eventRequest.ttsEvent(eventRequestMap[type][name], data.appId, args, (err, response) => {
+      if (err) {
+        logger.error(err)
+        return cb && cb(err)
+      }
       logger.log(`[eventRes](${type}, ${name}) Res(${JSON.stringify(response)}`)
       if (response === '{}') {
         return cb && cb()
@@ -223,7 +227,11 @@ Manager.prototype.sendEventRequest = function (type, name, data, args, cb) {
       cb && cb()
     })
   } else if (type === 'media') {
-    eventRequest.mediaEvent(eventRequestMap[type][name], data.appId, args, (response) => {
+    this.eventRequest.mediaEvent(eventRequestMap[type][name], data.appId, args, (err, response) => {
+      if (err) {
+        logger.error(err)
+        return cb && cb(err)
+      }
       logger.log(`[eventRes](${type}, ${name}) Res(${JSON.stringify(response)}`)
       if (response === '{}') {
         return cb && cb()
@@ -236,7 +244,7 @@ Manager.prototype.sendEventRequest = function (type, name, data, args, cb) {
 }
 
 Manager.prototype.setEventRequestConfig = function (config) {
-  eventRequest.setConfig(config || {})
+  this.eventRequest.setConfig(config || {})
 }
 Manager.prototype.generateAction = function (data) {
   var action = {

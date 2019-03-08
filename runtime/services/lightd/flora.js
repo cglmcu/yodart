@@ -6,6 +6,8 @@ var property = require('@yoda/property')
 
 var floraConfig = require('/etc/yoda/flora-config.json')
 
+var SETPICKUPURI = '/opt/light/setPickup.js'
+
 module.exports = Flora
 /**
  *
@@ -26,13 +28,18 @@ Flora.prototype.handlers = {
     }
     this.light.loadfile('@yoda', this.wakeUri, {}, {})
   },
+  'rokid.turen.end_voice': function (msg) {
+    logger.log('rokid.turen.end_voice')
+    this.light.stopFile('@yoda', SETPICKUPURI)
+    this.light.stopFile('@yoda', this.wakeUri)
+  },
   'rokid.turen.local_awake': function (msg) {
     logger.log('voice local awake')
     if (property.get('state.network.connected') !== 'true') {
       return
     }
     var degree = msg[0]
-    this.light.loadfile('@yoda', this.wakeUri, { degree: degree }, {})
+    this.light.loadfile('@yoda', this.wakeUri, { degree: degree }, { shouldResume: true })
   },
   'rokid.lightd.global_alpha_factor': function (msg) {
     var alphaFactor = msg[0]

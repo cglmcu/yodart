@@ -10,9 +10,6 @@ var floraConfig = require('/etc/yoda/flora-config.json')
 var globalEnv = require('@yoda/env')()
 var ovsdkConfig = require('/etc/yoda/openvoice-sdk.json')
 
-var asr2nlpId = 'js-AppRuntime'
-var asr2nlpSeq = 0
-
 module.exports = Flora
 /**
  *
@@ -23,8 +20,6 @@ function Flora (runtime) {
   this.runtime = runtime
   this.component = runtime.component
   this.speechAuthInfo = null
-
-  this.asr2nlpCallbacks = {}
 }
 inherits(Flora, FloraComp)
 
@@ -40,49 +35,9 @@ Flora.prototype.handlers = {
       logger.warn(`app is not alive, ignoring tts event(${event} for app(${appId})`)
       return
     }
+    /** [ event, ttsId, Optional(errno) ] */
     msg.splice(2, 1)
-    /** emit: [ ttsId, Optional(errno) ] */
-    descriptor.tts.emit.apply(descriptor.tts, msg)
-  },
-  [`rokid.speech.nlp.${asr2nlpId}`]: onAsr2Nlp,
-  [`rokid.speech.error.${asr2nlpId}`]: onAsr2NlpError
-}
-
-/**
- * @this Flora
- */
-function onAsr2Nlp (msg) {
-  var nlp
-  var action
-  var err
-  var seq
-  try {
-    nlp = JSON.parse(msg[0])
-    action = JSON.parse(msg[1])
-    seq = msg[2]
-  } catch (ex) {
-    logger.log('nlp/action parse failed, discarded')
-    err = ex
-  }
-
-  if (typeof this.asr2nlpCallbacks[seq] === 'function') {
-    this.asr2nlpCallbacks[seq](err, nlp, action)
-    delete this.asr2nlpCallbacks[seq]
-  }
-}
-
-/**
- * @this Flora
- */
-function onAsr2NlpError (msg) {
-  var err
-  var seq
-  err = new Error('speech put_text return error: ' + msg[0])
-  seq = msg[1]
-
-  if (typeof this.asr2nlpCallbacks[seq] === 'function') {
-    this.asr2nlpCallbacks[seq](err)
-    delete this.asr2nlpCallbacks[seq]
+    descriptor.tts.handleEvent.apply(descriptor.tts, msg)
   }
 }
 
@@ -141,39 +96,28 @@ Flora.prototype.updateStack = function updateStack (stack) {
 /**
  * Get NLP result of given asr text.
  * @param {string} asr
- * @param {object} skillOptions
- * @param {Function} cb
+ * @param {object} [deviceSkillOptions]
+ * @returns {Promise<[]>} Promise of an array, in which the first item is NLP object and the second item is action object
  */
-Flora.prototype.getNlpResult = function getNlpResult (asr, skillOptions, cb) {
-  if (typeof skillOptions === 'function') {
-    cb = skillOptions
-    skillOptions = {}
+Flora.prototype.getNlpResult = function getNlpResult (asr, deviceSkillOptions) {
+  if (typeof asr !== 'string') {
+    throw TypeError('Expect a string on first argument of Flora.getNlpResult')
   }
-  if (typeof asr !== 'string' || typeof skillOptions !== 'object' || typeof cb !== 'function') {
-    throw TypeError('Invalid argument of getNlpResult')
-  }
-  skillOptions = JSON.stringify(skillOptions)
-  ++asr2nlpSeq
-  this.asr2nlpCallbacks[asr2nlpSeq] = cb
-  this.post('rokid.speech.put_text', [
-    asr,
-    skillOptions,
-    asr2nlpId,
-    asr2nlpSeq
-  ], floraFactory.MSGTYPE_INSTANT)
+  return this.component.skillHost.querySkillOptions(deviceSkillOptions)
+    .then(skillOptions => {
+      return this.call('asr2nlp', [ asr, JSON.stringify(skillOptions) ], 'speech-service', 6000)
+    })
+    .then((resp) => {
+      if (resp.retCode !== 0) {
+        throw new Error('speech service asr2nlp failed: ' + resp.retCode)
+      }
+      var nlp, action
+      try {
+        nlp = JSON.parse(resp.msg[0])
+        action = JSON.parse(resp.msg[1])
+      } catch (ex) {
+        throw new Error('nlp/action parse failed')
+      }
+      return [ nlp, action ]
+    })
 }
-
-/**
- *
- * @param {object} cbs
- * @param {string} msg
- */
-/**
-function handleErrorCallbacks (cbs, msg) {
-  var err = new Error(msg)
-
-  Object.keys(cbs).forEach(key => {
-    cbs[key] && cbs[key](err)
-  })
-}
-*/

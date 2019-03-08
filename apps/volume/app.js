@@ -3,6 +3,7 @@ var AudioManager = require('@yoda/audio').AudioManager
 var manifest = require('@yoda/manifest')
 var logger = require('logger')('@volume')
 var _ = require('@yoda/util')._
+var ContextManager = require('@yodaos/application/context-manager')
 
 module.exports = function (activity) {
   var STRING_COMMON_ERROR = '我没有听清，请重新对我说一次'
@@ -19,14 +20,14 @@ module.exports = function (activity) {
     defaultVolume = 30
   }
 
-  function speakAndExit (text) {
+  function speakAndExit (ctx, text) {
     var ismuted = AudioManager.isMuted()
     if (ismuted) {
       AudioManager.setMute(false)
     }
     return activity.tts.speak(text).then(() => {
       if (ismuted) { AudioManager.setMute(true) }
-      return activity.exit()
+      return ctx.exit()
     })
   }
 
@@ -155,7 +156,7 @@ module.exports = function (activity) {
     var couldAnnounce = options.type === 'announce'
     if ((Date.now() - slowlyAdjustTimestamp) < oneMinute) {
       ++slowlyAdjustCounter
-      if (slowlyAdjustCounter >= 3) {
+      if (slowlyAdjustCounter === 3) {
         shouldAnnounceHelp = true
       }
     } else {
@@ -221,38 +222,40 @@ module.exports = function (activity) {
   }
 
   function handleWrap (fn) {
-    return function () {
+    return function (ctx) {
       try {
         return fn.apply(this, arguments)
       } catch (err) {
         if (err.tts) {
-          return speakAndExit(err.tts)
+          return speakAndExit(ctx, err.tts)
         }
         logger.error('Unexpected error on volume app', err.stack)
-        return speakAndExit(STRING_COMMON_ERROR)
+        return speakAndExit(ctx, STRING_COMMON_ERROR)
       }
     }
   }
 
-  activity.on('request', handleWrap(function (nlp, action) {
+  var ctxManager = new ContextManager(activity)
+  ctxManager.on('request', handleWrap(function (ctx) {
+    var nlp = ctx.nlp
     var partition = 10
     var vol
     switch (nlp.intent) {
       case 'showvolume':
         if (AudioManager.isMuted() || getVolume() <= 0) {
           setUnmute({ type: /** do not announce nor effect */null })
-            .then(() => speakAndExit(STRING_SHOW_MUTED + Math.ceil(getVolume())))
+            .then(() => speakAndExit(ctx, STRING_SHOW_MUTED + Math.ceil(getVolume())))
         } else {
-          speakAndExit(STRING_SHOW_VOLUME + Math.ceil(getVolume()))
+          speakAndExit(ctx, STRING_SHOW_VOLUME + Math.ceil(getVolume()))
         }
         break
       case 'set_volume_percent': {
         vol = format(nlp.slots)
         if (vol < 0 || vol > 100) {
-          return speakAndExit(STRING_OUT_OF_RANGE)
+          return speakAndExit(ctx, STRING_OUT_OF_RANGE)
         }
         setVolume(vol, { type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       }
       case 'set_volume': {
@@ -261,41 +264,49 @@ module.exports = function (activity) {
           vol = vol * partition
         }
         if (vol < 0 || vol > 100) {
-          return speakAndExit(STRING_OUT_OF_RANGE)
+          return speakAndExit(ctx, STRING_OUT_OF_RANGE)
         }
         setVolume(vol, { type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       }
       case 'add_volume_num':
-        incVolume(format(nlp.slots) * partition, { type: 'announce' })
-          .then(() => activity.exit())
+        vol = format(nlp.slots)
+        if (vol < 10) {
+          vol = vol * partition
+        }
+        incVolume(vol, { type: 'announce' })
+          .then(() => ctx.exit())
         break
       case 'dec_volume_num':
-        decVolume(format(nlp.slots) * partition, { type: 'announce' })
-          .then(() => activity.exit())
+        vol = format(nlp.slots)
+        if (vol < 10) {
+          vol = vol * partition
+        }
+        decVolume(vol, { type: 'announce' })
+          .then(() => ctx.exit())
         break
       case 'add_volume_percent':
         incVolume(format(nlp.slots), { type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       case 'dec_volume_percent':
         decVolume(format(nlp.slots), { type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       case 'volumeup':
       case 'volume_too_low':
         adjustVolumeSlowly(partition, { type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       case 'volumedown':
       case 'volume_too_high':
         adjustVolumeSlowly(-partition, { type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       case 'volumemin':
         setVolume(10, { type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       case 'volumemax': {
         vol = getVolume()
@@ -303,19 +314,19 @@ module.exports = function (activity) {
           return activity.tts.speak(STRING_OUT_OF_RANGE_MAX)
         }
         setVolume(100, { type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       }
       case 'volumemute':
         setMute()
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       case 'cancelmute':
         setUnmute({ type: 'announce' })
-          .then(() => activity.exit())
+          .then(() => ctx.exit())
         break
       default:
-        activity.exit()
+        ctx.exit()
         break
     }
   }))
@@ -344,16 +355,13 @@ module.exports = function (activity) {
           return
         }
         setVolume(vol, { type: null })
-          .then(() => activity.exit())
         break
       }
       case '/mute':
         setMute()
-          .then(() => activity.exit())
         break
       case '/unmute':
         setUnmute({ type: 'effect' })
-          .then(() => activity.exit())
         break
     }
   })

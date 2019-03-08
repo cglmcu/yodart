@@ -22,21 +22,18 @@ module.exports = function (activity) {
   var strings = require('./strings.json')
   var config = require('./config.json')
   var needResume = false
-  var lastIntent = null
+  var lastIntent = 'derived_from_phone'
   var timer = null
-  var onTopStack = false
-  var onQuietMode = false
   var callState = protocol.CALL_STATE.IDLE
   var deviceProps = null
   var agent = null
+  var currentSkillName = 'bluetooth'
 
-  function setAppType (hosts, afterFunc) {
-    var id = getSkillId(hosts)
-    logger.debug(`setAppType(${hosts}: ${id})`)
-    switch (hosts) {
+  function setAppType (skillName, afterFunc) {
+    var id = getSkillId(skillName)
+    logger.debug(`setAppType(${skillName}: ${id})`)
+    switch (skillName) {
       case 'bluetooth_music':
-        var url = util.format(res.URL.PLAYER_CONTROLLER, id)
-        activity.openUrl(url, {preemptive: false})
         if (typeof afterFunc === 'function') {
           activity.setForeground({form: 'scene', skillId: id}).then(afterFunc)
         } else {
@@ -61,14 +58,19 @@ module.exports = function (activity) {
         break
     }
     activity.setContextOptions({ keepAlive: true })
+    currentSkillName = skillName
   }
 
   function playIncomingRingtone () {
-    activity.media.start(res.AUDIO.RINGTONE, {streamType: 'ring'})
+    activity.media.start(res.AUDIO.RINGTONE, {streamType: 'ring'}).catch((err) => {
+      logger.warn('play ringtone error:', err)
+    })
   }
 
   function stopIncomingRingtone () {
-    activity.media.stop()
+    activity.media.stop().catch((err) => {
+      logger.warn('stop ringtone error:', err)
+    })
   }
 
   function textIsEmpty (text) {
@@ -101,25 +103,41 @@ module.exports = function (activity) {
     logger.debug(`after speak(mode = ${a2dp.getMode()}, radio = ${a2dp.getRadioState()}, audio = ${a2dp.getAudioState()})`)
     if (a2dp.getAudioState() === protocol.AUDIO_STATE.PLAYING) {
       a2dp.unmute()
-    } else {
+    }
+    if (currentSkillName === 'bluetooth') {
       activity.setBackground()
     }
   }
 
-  function speak (text, alternativeVoice) {
+  function speakThenDo (text, alternativeVoice, afterSpeakFunc) {
     logger.debug(`speak: ${text}`)
     if (!textIsEmpty(text)) {
       return activity.setForeground().then(() => {
         if (wifi.getWifiState() === wifi.WIFI_CONNECTED) {
           return activity.tts.speak(text, { impatient: false }).catch((err) => {
             logger.error('play tts error: ', err)
+            if (alternativeVoice != null) {
+              return activity.playSound(alternativeVoice)
+            }
           })
         } else if (alternativeVoice != null) {
           logger.debug('No wifi connection, play alternative voice.')
           return activity.playSound(alternativeVoice)
         }
-      }).then(afterSpeak)
+      }).then(() => {
+        if (afterSpeakFunc != null) {
+          afterSpeakFunc()
+        }
+      })
     }
+  }
+
+  function speak (text, alternativeVoice) {
+    return speakThenDo(text, alternativeVoice, afterSpeak)
+  }
+
+  function speakOnly (text, alternativeVoice) {
+    return speakThenDo(text, alternativeVoice)
   }
 
   function setTimer (callback, timeout) {
@@ -194,6 +212,12 @@ module.exports = function (activity) {
     'disconnect_devices': () => {
       a2dp.disconnect()
     },
+    // 1.6 query music info
+    'bluetooth_info': () => {
+      if (a2dp.getAudioState() === protocol.AUDIO_STATE.PLAYING) {
+        a2dp.query()
+      }
+    },
 
     /**
      * 2. a2dp sink intents
@@ -217,6 +241,17 @@ module.exports = function (activity) {
       var isPlaying = a2dp.getAudioState() === protocol.AUDIO_STATE.PLAYING
       logger.debug(`Start play bt music, mode=${mode}, radio=${a2dp.getRadioState()}`)
       if (mode === protocol.A2DP_MODE.SINK && isConnected && !isPlaying) {
+        setTimer(() => {
+          if (a2dp.getConnectionState() === protocol.CONNECTION_STATE.CONNECTED &&
+            a2dp.getAudioState() !== protocol.AUDIO_STATE.PLAYING) {
+            var dev = a2dp.getConnectedDevice()
+            if (dev != null) {
+              speak(getText('PLAY_FAILED_ARG1S', dev.name))
+            }
+            lastIntent = 'derived_from_phone'
+          }
+        }, config.TIMER.DELAY_BEFORE_PLAY_FAILED)
+        speakOnly(getText('PLEASE_WAIT'))
         a2dp.play()
       } else {
         a2dp.open(protocol.A2DP_MODE.SINK, {autoplay: true})
@@ -254,7 +289,6 @@ module.exports = function (activity) {
         template = {'currentDevice': a2dp.getConnectedDevice()}
       }
       sendMsgToApp(status, template)
-      activity.setBackground()
     },
     // 3.2 open and auto connect to history bluetooth speaker via source mode
     'connect_speaker': () => {
@@ -276,7 +310,6 @@ module.exports = function (activity) {
     },
     // 3.5 begin scan around bluetooth devices
     'bluetooth_discovery': () => {
-      activity.setBackground()
       a2dp.discovery()
     },
 
@@ -333,6 +366,7 @@ module.exports = function (activity) {
         } else {
           speak(getText('SINK_FIRST_OPENED_ARG1S', deviceName), res.AUDIO['ON_OPENED'])
         }
+        lastIntent = 'derived_from_phone'
         break
       case 'connect_phone':
       case 'bluetooth_start_bluetooth_music':
@@ -357,6 +391,7 @@ module.exports = function (activity) {
     } else {
       speak(getText('SOURCE_FIRST_OPENED'), res.AUDIO['ON_OPENED'])
     }
+    lastIntent = 'derived_from_phone'
   }
 
   function onRadioStateChangedListener (mode, state, extra) {
@@ -419,16 +454,22 @@ module.exports = function (activity) {
               }
             }
           }, config.TIMER.DELAY_BEFORE_PLAY_FAILED)
-          speak(getText('PLEASE_WAIT'), res.AUDIO[state])
+          speakOnly(getText('PLEASE_WAIT'))
         } else {
           speak(getText('CONNECTED_ARG1S', device.name), res.AUDIO[state])
+          lastIntent = 'derived_from_phone'
         }
         break
       case protocol.CONNECTION_STATE.DISCONNECTED:
-        if (lastIntent === 'bluetooth_disconnect') {
-          logger.debug('Suppress "disconnected" prompt while close.')
-        } else {
+        if (currentSkillName === 'bluetooth_call') {
+          onCallStateChangedListener(protocol.CALL_STATE.IDLE)
+        } else if (currentSkillName === 'bluetooth_music') {
+          setAppType('bluetooth')
+        }
+        if (lastIntent !== 'implicit_disconnect' && lastIntent !== 'bluetooth_disconnect') {
           speak(getText('DISCONNECTED'))
+        } else {
+          logger.debug('Suppress "disconnected" prompt while NOT user explicit intent.')
         }
         break
       case protocol.CONNECTION_STATE.CONNECT_FAILED:
@@ -455,10 +496,9 @@ module.exports = function (activity) {
         setAppType('bluetooth_music')
         cancelTimer()
         setTimer(() => { // To ensure unmute because turen may mute music by itself.
-          if (!onQuietMode) {
-            a2dp.unmute()
-          }
+          a2dp.unmute()
         }, 100)
+        lastIntent = 'derived_from_phone'
         break
       case protocol.AUDIO_STATE.PAUSED:
       case protocol.AUDIO_STATE.STOPPED:
@@ -471,17 +511,38 @@ module.exports = function (activity) {
         logger.debug(`  title: ${extra.title}`)
         logger.debug(`  artist: ${extra.artist}`)
         logger.debug(`  album: ${extra.album}`)
-        addToFavorite(extra).then((ret) => {
-          logger.debug('http result: ', ret)
-          if (ret !== null && ret.success) {
-            speak(ret.data.RKMusicResponse.result.tts)
-          } else {
-            speak(getText('ADD_TO_FAVORITE_FAILED'))
-          }
-        }).catch((err) => {
-          logger.error('Send request failed: ', err)
-          speak(getText('ADD_TO_FAVORITE_FAILED'))
-        })
+        var fail = textIsEmpty(extra.title) || textIsEmpty(extra.artist)
+        switch (lastIntent) {
+          case 'like':
+            if (fail) {
+              speak(getText('ADD_TO_FAVORITE_FAILED'))
+            } else {
+              addToFavorite(extra).then((ret) => {
+                logger.debug('http result: ', ret)
+                if (ret !== null && ret.success) {
+                  speak(ret.data.RKMusicResponse.result.tts)
+                } else {
+                  speak(getText('ADD_TO_FAVORITE_FAILED'))
+                }
+              }).catch((err) => {
+                logger.error('Send request failed: ', err)
+                speak(getText('ADD_TO_FAVORITE_FAILED'))
+              })
+            }
+            break
+          case 'bluetooth_info':
+            if (fail) {
+              speak(getText('MUSIC_INFO_FAIL'))
+            } else {
+              if (textIsEmpty(extra.album)) {
+                extra.album = extra.title
+              }
+              speak(util.format(strings.MUSIC_INFO_SUCC, extra.artist, extra.title, extra.album))
+            }
+            break
+          default:
+            break
+        }
         break
       default:
         break
@@ -496,13 +557,13 @@ module.exports = function (activity) {
     }
     switch (state) {
       case protocol.DISCOVERY_STATE.ON:
-        if (lastIntent === 'bluetooth_disconnect') {
-          logger.debug('Suppress "discovery" light while close.')
-        } else {
-          activity.light.play(res.LIGHT.DISCOVERY_ON, {}, { shouldResume: true })
+        if (lastIntent !== 'implicit_disconnect' && lastIntent !== 'bluetooth_disconnect') {
+          activity.light.play(res.LIGHT.DISCOVERY_ON, {}, { shouldResume: true, zIndex: 2 })
             .catch((err) => {
               logger.error('bluetooth play light error: ', err)
             })
+        } else {
+          logger.debug('Suppress "discovery" light in conditions which is not user explicit intents.')
         }
         break
       case protocol.DISCOVERY_STATE.OFF:
@@ -528,8 +589,8 @@ module.exports = function (activity) {
   }
 
   function resumeMusic () {
-    logger.debug(`resumeMusic(top:${onTopStack} quiet:${onQuietMode} res:${needResume})`)
-    if (onTopStack && !onQuietMode && needResume) {
+    logger.debug(`needResume:${needResume})`)
+    if (needResume) {
       needResume = false
       a2dp.play()
       return true
@@ -537,7 +598,7 @@ module.exports = function (activity) {
     return false
   }
 
-  function onCallStateChangedListener (state) {
+  function onCallStateChangedListener (state, extra) {
     logger.debug(`onCallStateChanged(${state}), lastState=${callState}`)
     switch (state) {
       case protocol.CALL_STATE.IDLE:
@@ -547,28 +608,19 @@ module.exports = function (activity) {
           }
           activity.keyboard.restoreDefaults(config.KEY_CODE.POWER)
           activity.stopMonologue()
-          a2dp.mute()
-          var paused = pauseMusic()
-          if (paused) {
-            setAppType('bluetooth_music')
-          } else {
-            setAppType('bluetooth')
-          }
-          if (callState !== protocol.CALL_STATE.IDLE) {
-            activity.light.play(res.LIGHT.CALL[state])
-            activity.light.stop(res.LIGHT.CALL[callState])
-          }
+          setAppType('bluetooth')
+          activity.light.play(res.LIGHT.CALL[state], {}, { zIndex: 2 })
+          activity.light.stop(res.LIGHT.CALL[callState])
         }
         callState = state
         break
       case protocol.CALL_STATE.INCOMING:
         if (callState === protocol.CALL_STATE.IDLE) {
-          pauseMusic()
           setAppType('bluetooth_call', () => {
             activity.startMonologue()
             activity.keyboard.preventDefaults(config.KEY_CODE.POWER)
           })
-          activity.light.play(res.LIGHT.CALL[state], {}, { shouldResume: true })
+          activity.light.play(res.LIGHT.CALL[state], {}, { shouldResume: true, zIndex: 2 })
             .catch((err) => {
               logger.error(`play ${state} light error: `, err)
             })
@@ -576,7 +628,6 @@ module.exports = function (activity) {
         callState = state
         break
       case protocol.CALL_STATE.OFFHOOK:
-        pauseMusic()
         if (callState === protocol.CALL_STATE.IDLE) {
           setAppType('bluetooth_call', () => {
             activity.startMonologue()
@@ -585,7 +636,7 @@ module.exports = function (activity) {
         } else if (callState === protocol.CALL_STATE.INCOMING || callState === protocol.CALL_STATE.RING) {
           stopIncomingRingtone()
         }
-        activity.light.play(res.LIGHT.CALL[state], {}, { shouldResume: true })
+        activity.light.play(res.LIGHT.CALL[state], {}, { shouldResume: true, zIndex: 2 })
           .catch((err) => {
             logger.error(`play ${state} light error: `, err)
           })
@@ -595,7 +646,9 @@ module.exports = function (activity) {
         callState = state
         break
       case protocol.CALL_STATE.RING:
-        playIncomingRingtone()
+        if (extra.play) {
+          playIncomingRingtone()
+        }
         break
       default:
         break
@@ -621,8 +674,7 @@ module.exports = function (activity) {
     var audioPath = data[0]
     var vol = data[1]
     logger.log(`audio path: ${audioPath}, vol: ${vol}`)
-    if (audioPath === 'playback' && onTopStack &&
-      a2dp.getAudioState() === protocol.AUDIO_STATE.PLAYING) {
+    if (audioPath === 'playback' && a2dp.getAudioState() === protocol.AUDIO_STATE.PLAYING) {
       process.nextTick(() => {
         a2dp.syncVol(vol)
       })
@@ -639,7 +691,6 @@ module.exports = function (activity) {
     a2dp.on('discovery_state_changed', onDiscoveryStateChangedListener)
     hfp.on('call_state_changed', onCallStateChangedListener)
     activity.keyboard.on('click', onKeyEvent)
-    activity.setContextOptions({ keepAlive: true })
     agent = new flora.Agent('unix:/var/run/flora.sock')
     agent.subscribe('yodart.audio.on-volume-change', onDeviceVolumeChanged)
     agent.start()
@@ -651,43 +702,51 @@ module.exports = function (activity) {
   })
 
   activity.on('resume', () => {
-    logger.log(`activity.onResume()`)
-    onTopStack = true
-    if (hfp.getCallState() !== protocol.CALL_STATE.IDLE) {
-      // Do nothing while in call.
-    } else {
-      resumeMusic()
+    logger.log(`activity.onResume(${currentSkillName})`)
+    switch (currentSkillName) {
+      case 'bluetooth_music':
+        resumeMusic()
+        break
+      default:
+        break
     }
   })
 
   activity.on('active', () => {
-    logger.log(`activity.onActive()`)
-    onTopStack = true
+    logger.log(`activity.onActive(${currentSkillName})`)
+    activity.setContextOptions({ keepAlive: true })
   })
 
   activity.on('background', () => {
-    logger.log(`activity.onBackground()`)
-    onTopStack = false
-    if (hfp.getCallState() !== protocol.CALL_STATE.IDLE) {
-      // Do nothing while in call.
-    } else if (a2dp.getAudioState() === protocol.AUDIO_STATE.PLAYING) {
-      a2dp.disconnect()
+    logger.log(`activity.onBackground(${currentSkillName})`)
+    if (currentSkillName === 'bluetooth_music') {
+      var skillId = getSkillId(currentSkillName)
+      var url = util.format(res.URL.PLAYER_CONTROLLER, skillId)
+      activity.openUrl(url, {preemptive: false})
+    }
+    if (currentSkillName !== 'bluetooth') {
+      if (a2dp.getConnectionState() === protocol.CONNECTION_STATE.CONNECTED) {
+        lastIntent = 'implicit_disconnect'
+        a2dp.disconnect()
+      }
       setAppType('bluetooth')
+      callState = protocol.CALL_STATE.IDLE
     }
   })
 
   activity.on('pause', () => {
-    logger.log(`activity.onPause()`)
-    onTopStack = false
-    if (hfp.getCallState() !== protocol.CALL_STATE.IDLE) {
-      // Do nothing while in call.
-    } else {
-      pauseMusic()
+    logger.log(`activity.onPause(${currentSkillName})`)
+    switch (currentSkillName) {
+      case 'bluetooth_music':
+        pauseMusic()
+        break
+      default:
+        break
     }
   })
 
   activity.on('destroy', () => {
-    logger.log('activity.onDestroy()')
+    logger.log(`activity.onDestroy(${currentSkillName})`)
     agent.close()
     agent.unsubscribe('yodart.audio.on-volume-change')
     if (a2dp !== null) {
@@ -705,7 +764,7 @@ module.exports = function (activity) {
 
   activity.on('request', function (nlp, action) {
     lastIntent = nlp.intent
-    logger.log(`activity.onNlpRequest(intent: ${nlp.intent})`)
+    logger.log(`activity.onNlpRequest(intent: ${nlp.intent}), ${currentSkillName}`)
     handleIntents(nlp.intent, nlp)
   })
 
@@ -716,14 +775,12 @@ module.exports = function (activity) {
   })
 
   activity.on('notification', (state) => {
-    logger.debug(`activity.onNotification(${state})`)
+    logger.debug(`activity.onNotification(${state}), ${currentSkillName}`)
     switch (state) {
       case 'on-quite-front':
-        onQuietMode = false
         resumeMusic()
         break
       case 'on-quite-back':
-        onQuietMode = true
         if (hfp.getCallState() !== protocol.CALL_STATE.IDLE) {
           hfp.hangup()
         }

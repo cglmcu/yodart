@@ -61,7 +61,7 @@ function AppRuntime () {
 
   this.inited = false
   this.hibernated = false
-  this.welcoming = false
+  this.__temporaryDisablingReasons = [ 'initiating' ]
   // identify load app complete
   this.loadAppComplete = false
   this.shouldStopLongPressMicLight = false
@@ -77,52 +77,86 @@ AppRuntime.prototype.init = function init () {
   if (this.inited) {
     return Promise.resolve()
   }
+  /** 1. init components. */
   this.componentsInvoke('init')
+  /** 2. init device properties, such as volume and cloud stack. */
   this.initiate()
-  /** set turen to not muted */
+  this.resetCloudStack()
+  /** 3. init services */
   this.component.turen.toggleMute(false)
   this.component.turen.toggleWakeUpEngine(true)
+  this.resetServices()
 
+  /** 4. listen on lifetime events */
   this.component.lifetime.on('stack-reset', () => {
     this.resetCloudStack()
   })
   this.component.lifetime.on('preemption', appId => {
     this.appPause(appId)
   })
-  // initializing the whole process...
-  this.resetCloudStack()
-  this.resetServices()
-  this.shouldWelcome = !this.isStartupFlagExists()
 
+  /** 5. determines if welcome announcements are needed */
+  this.shouldWelcome = !this.isStartupFlagExists()
+  var isFirstBoot = property.get('sys.firstboot.init', 'persist') !== '1'
+  property.set('sys.firstboot.init', '1', 'persist')
+
+  var shouldBreakInit = () => {
+    if (this.hasBeenDisabled()) {
+      if (this.__temporaryDisablingReasons.length > 1) {
+        return true
+      }
+      if (this.__temporaryDisablingReasons[0] !== 'welcoming') {
+        return true
+      }
+    }
+    return false
+  }
+
+  /** 6. load app manifests */
   return this.loadApps().then(() => {
     this.inited = true
+    this.enableRuntimeFor('initiating')
+
+    /** 7. questioning if any interests of delegation */
     return this.component.dispatcher.delegate('runtimeDidInit')
   }).then(delegation => {
     if (delegation) {
       return
     }
-    this.welcoming = true
+    this.disableRuntimeFor('welcoming')
 
+    /** 8. announce welcoming */
     var future = Promise.resolve()
-    if (property.get('sys.firstboot.init', 'persist') !== '1') {
-      // initializing play tts status
-      property.set('sys.firstboot.init', '1', 'persist')
+    if (isFirstBoot) {
+      /** 8.1. announce first time welcoming */
       future = future.then(() => {
-        return this.component.light.ttsSound('@system', 'system://firstboot.ogg')
+        if (shouldBreakInit()) {
+          return
+        }
+        return this.component.light.ttsSound('@yoda', 'system://firstboot.ogg')
       })
     }
     if (this.shouldWelcome) {
+      /** 8.2. announce system loading */
       future = future.then(() => {
+        if (shouldBreakInit()) {
+          return
+        }
         this.component.light.play('@yoda', 'system://boot.js', { fps: 200 })
         return this.component.light.appSound('@yoda', 'system://boot.ogg')
       })
     }
     return future.then(() => {
-      this.welcoming = false
+      this.enableRuntimeFor('welcoming')
+      if (shouldBreakInit()) {
+        return
+      }
+      /** 9. force-enable and check network states */
       this.component.custodian.prepareNetwork()
+      this.dispatchNotification('on-system-booted', [])
     }).catch(err => {
       logger.error('unexpected error on boot welcoming', err.stack)
-      this.welcoming = false
+      this.enableRuntimeFor('welcoming')
     })
   })
 }
@@ -260,6 +294,76 @@ AppRuntime.prototype.handlePowerActivation = function handlePowerActivation () {
 }
 
 /**
+ * Determines if runtime has been disabled for specific reason or just has been disabled.
+ *
+ * @param {string} [reason]
+ * @returns {boolean}
+ */
+AppRuntime.prototype.hasBeenDisabled = function hasBeenDisabled (reason) {
+  if (reason) {
+    return this.__temporaryDisablingReasons.indexOf(reason) >= 0
+  }
+  return this.__temporaryDisablingReasons.length > 0
+}
+
+/**
+ * Get all reasons for disabling runtime.
+ *
+ * @returns {string[]}
+ */
+AppRuntime.prototype.getDisabledReasons = function getDisabledReasons () {
+  return this.__temporaryDisablingReasons
+}
+
+/**
+ * Disable runtime for reason.
+ *
+ * Effects:
+ * - Turen wake up engine would be disabled.
+ * - Network events would be ignored.
+ * - Battery events would be ignored.
+ * - Application could not be opened through dispatching.
+ *
+ * @param {string} reason
+ * @returns {boolean} if reason was successfully added to memo.
+ */
+AppRuntime.prototype.disableRuntimeFor = function disableRuntimeFor (reason) {
+  if (typeof reason !== 'string') {
+    throw new TypeError('Expect a string as reason for AppRuntime.prototype.disableRuntimeFor')
+  }
+  if (this.__temporaryDisablingReasons.indexOf(reason) >= 0) {
+    logger.warn(`runtime has already been disabled for reason(${reason}), possible duplicated operation.`)
+    return false
+  }
+  this.__temporaryDisablingReasons.push(reason)
+  logger.warn(`disabling runtime for reason: ${reason}, current reasons: ${this.__temporaryDisablingReasons}`)
+  this.component.turen.toggleWakeUpEngine(false)
+  return true
+}
+
+/**
+ * Remove previously disabling runtime reason. Would enable runtime if there is no reason remaining.
+ *
+ * @param {string} reason
+ * @returns {boolean} if reason was successfully removed from memo.
+ */
+AppRuntime.prototype.enableRuntimeFor = function enableRuntimeFor (reason) {
+  if (typeof reason !== 'string') {
+    throw new TypeError('Expect a string as reason for AppRuntime.prototype.enableRuntimeFor')
+  }
+  var idx = this.__temporaryDisablingReasons.indexOf(reason)
+  if (idx < 0) {
+    return false
+  }
+  this.__temporaryDisablingReasons.splice(idx, 1)
+  logger.warn(`enabling runtime for reason: ${reason}, current reasons: ${this.__temporaryDisablingReasons}`)
+  if (this.__temporaryDisablingReasons.length === 0) {
+    this.component.turen.toggleWakeUpEngine(true)
+  }
+  return true
+}
+
+/**
  * Put device into idle state. Terminates apps in stack (i.e. apps in active and paused).
  *
  * Also clears apps' contexts.
@@ -283,6 +387,7 @@ AppRuntime.prototype.hibernate = function hibernate () {
   }
   logger.info('hibernating runtime')
   this.hibernated = true
+  this.disableRuntimeFor('hibernated')
   this.component.turen.pickup(false)
   this.setMicMute(true, { silent: true })
   /**
@@ -306,6 +411,7 @@ AppRuntime.prototype.wakeup = function wakeup (options) {
   }
   logger.info('waking up runtime')
   this.hibernated = false
+  this.enableRuntimeFor('hibernated')
   if (shouldWelcome) {
     this.shouldWelcome = true
   }
@@ -315,6 +421,8 @@ AppRuntime.prototype.wakeup = function wakeup (options) {
 
   this.component.custodian.resetState()
   this.component.custodian.prepareNetwork()
+  this.component.dispatcher.delegate('runtimeDidResumeFromSleep')
+  this.dispatchNotification('on-system-booted', [])
 }
 
 /**
@@ -431,10 +539,11 @@ AppRuntime.prototype.stopMonologue = function (appId) {
  * @param {object} nlp
  * @param {object} action
  * @param {object} [options]
+ * @param {'voice' | 'text' | undefined} [options.source] - nlp intent source
  * @param {boolean} [options.preemptive]
  * @param {boolean} [options.carrierId]
  */
-AppRuntime.prototype.onVoiceCommand = function (asr, nlp, action, options) {
+AppRuntime.prototype.handleNlpIntent = function (text, nlp, action, options) {
   if (_.get(nlp, 'appId') == null) {
     logger.log('invalid nlp/action, ignore')
     return Promise.resolve(false)
@@ -461,15 +570,22 @@ AppRuntime.prototype.onVoiceCommand = function (asr, nlp, action, options) {
     return Promise.resolve(false)
   }
 
-  return this.component.dispatcher.dispatchAppEvent(
-    appId,
-    'request', [ nlp, action ],
-    Object.assign({}, options, {
-      form: form,
-      skillId: nlp.appId
+  return this.component.dispatcher.delegate('runtimeWillDispatchNlpIntent', [ appId, text, nlp, action, options ])
+    .then(delegation => {
+      if (delegation) {
+        return true
+      }
+      return this.component.dispatcher.dispatchAppEvent(
+        appId,
+        'request', [ nlp, action ],
+        Object.assign({}, options, {
+          form: form,
+          skillId: nlp.appId
+        })
+      )
     })
-  )
 }
+AppRuntime.prototype.onVoiceCommand = AppRuntime.prototype.handleNlpIntent
 
 /**
  *
@@ -581,7 +697,9 @@ AppRuntime.prototype.setForegroundById = function setForegroundById (appId, opti
 
 /**
  *
- * @param {boolean} [mute] - set mic to mute, switch mute if not given.
+ * @param {boolean} mute - set mic to mute, switch mute if not given.
+ * @param {object} [options]
+ * @param {boolean} [options.silent]
  */
 AppRuntime.prototype.setMicMute = function setMicMute (mute, options) {
   var silent = _.get(options, 'silent', false)
@@ -591,11 +709,8 @@ AppRuntime.prototype.setMicMute = function setMicMute (mute, options) {
     future = this.component.light.stop('@yoda', 'system://setMuted.js')
   }
 
-  if (mute === this.component.turen.muted) {
-    return future
-  }
   /** mute */
-  var muted = this.component.turen.toggleMute()
+  var muted = this.component.turen.toggleMute(mute)
 
   if (silent) {
     return future
@@ -792,36 +907,27 @@ AppRuntime.prototype.voiceCommand = function (text, options) {
   var isTriggered = _.get(options, 'isTriggered', false)
   var appId = _.get(options, 'appId')
 
-  var skillOption = {
-    device: {
-      linkage: {
-        trigger: isTriggered
-      }
+  var deviceSkillOption = {
+    linkage: {
+      trigger: isTriggered
     }
   }
-  return new Promise((resolve, reject) => {
-    this.component.flora.getNlpResult(text, skillOption, function (err, nlp, action) {
-      if (err) {
-        return reject(err)
+  return this.component.flora.getNlpResult(text, deviceSkillOption)
+    .then((result) => {
+      var nlp = result[0]
+      var action = result[1]
+      var future = Promise.resolve()
+      if (appId) {
+        /**
+         * retreat self-app into background, then promote the upcoming app
+         * to prevent self being destroy in stack preemption.
+         */
+        future = this.component.lifetime.setBackgroundById(appId)
       }
-      logger.info('get nlp result for asr', text, nlp, action)
-      resolve([ nlp, action ])
+      return future.then(() => this.handleNlpIntent(text, nlp, action, {
+        carrierId: isTriggered ? appId : undefined
+      }))
     })
-  }).then((result) => {
-    var nlp = result[0]
-    var action = result[1]
-    var future = Promise.resolve()
-    if (appId) {
-      /**
-       * retreat self-app into background, then promote the upcoming app
-       * to prevent self being destroy in stack preemption.
-       */
-      future = this.component.lifetime.setBackgroundById(appId)
-    }
-    return future.then(() => this.onVoiceCommand(text, nlp, action, {
-      carrierId: isTriggered ? appId : undefined
-    }))
-  })
 }
 
 /**
@@ -829,18 +935,21 @@ AppRuntime.prototype.voiceCommand = function (text, options) {
  * @param {string} appId -
  * @param {object} [options] -
  * @param {boolean} [options.clearContext] - also clears contexts
+ * @param {boolean} [options.ignoreKeptAlive] - ignore contextOptions.keepAlive
  */
 AppRuntime.prototype.exitAppById = function exitAppById (appId, options) {
   var clearContext = _.get(options, 'clearContext', false)
+  var ignoreKeptAlive = _.get(options, 'ignoreKeptAlive', false)
   if (clearContext) {
-    if (appId === this.component.appLoader.getAppIdBySkillId(this.domain.scene)) {
-      this.updateCloudStack('', 'scene', { isActive: false })
-    }
-    if (appId === this.component.appLoader.getAppIdBySkillId(this.domain.cut)) {
-      this.updateCloudStack('', 'cut', { isActive: false })
-    }
+    ['scene', 'cut'].forEach(it => {
+      var expectedAppId = this.component.appLoader.getAppIdBySkillId(this.domain[it])
+      if ((appId === '@yoda/cloudappclient' && expectedAppId == null) ||
+          appId === expectedAppId) {
+        this.updateCloudStack('', it, { isActive: false })
+      }
+    })
   }
-  return this.component.lifetime.deactivateAppById(appId)
+  return this.component.lifetime.deactivateAppById(appId, { force: ignoreKeptAlive })
 }
 
 /**
@@ -886,29 +995,6 @@ AppRuntime.prototype.syncCloudAppIdStack = function (stack) {
   this.cloudSkillIdStack = stack || []
   logger.log('cloudStack', this.cloudSkillIdStack)
   return Promise.resolve()
-}
-
-/**
- *
- * @param {string} skillId
- * @param {object} nlp
- * @param {object} action
- * @param {object} [options]
- * @param {boolean} [options.preemptive]
- */
-AppRuntime.prototype.startApp = function (skillId, nlp, action, options) {
-  nlp.cloud = false
-  nlp.appId = skillId
-  action = {
-    appId: skillId,
-    startWithActiveWord: false,
-    response: {
-      action: action || {}
-    }
-  }
-  action.response.action.appId = skillId
-  action.response.action.form = 'cut'
-  return this.onVoiceCommand('', nlp, action, options)
 }
 
 /**
@@ -965,7 +1051,7 @@ AppRuntime.prototype.onForward = function (message) {
       }
     }
   }
-  this.onVoiceCommand('', mockNlp, mockAction, { preemptive: preemptive })
+  this.handleNlpIntent('', mockNlp, mockAction, { preemptive: preemptive })
 }
 
 /**
@@ -996,7 +1082,7 @@ AppRuntime.prototype.shutdown = function shutdown () {
       if (this.component.battery.isCharging()) {
         return system.rebootCharging()
       }
-      return system.powerOff()
+      return system.powerOff('power-key')
     })
 }
 
@@ -1004,7 +1090,7 @@ AppRuntime.prototype.shutdown = function shutdown () {
  * @private
  */
 AppRuntime.prototype.ttsMethod = function (name, args) {
-  return this.component.flora.call(`yodart.ttsd.${name}`, args, 'ttsd', 100)
+  return this.component.flora.call(`yodart.ttsd.${name}`, args, 'ttsd', 1000)
 }
 
 AppRuntime.prototype.multimediaMethod = function (name, args) {
@@ -1026,7 +1112,9 @@ AppRuntime.prototype.reconnect = function () {
   if (this.component.custodian.isConfiguringNetwork()) {
     return this.openUrl(`yoda-skill://network/connected`, { preemptive: false })
   }
-  return this.login()
+  if (!this.component.custodian.isNetworkUnavailable()) {
+    return this.login()
+  }
 }
 
 /**
@@ -1104,20 +1192,19 @@ AppRuntime.prototype.onLoggedIn = function onLoggedIn (config) {
             return
             /** delegation should break all actions below */
           }
-          this.welcoming = true
+          this.disableRuntimeFor('welcoming')
           logger.info('announcing welcome')
           return this.setMicMute(false, { silent: true })
             .then(() => {
-              this.component.light.appSound('@yoda', 'system://startup0.ogg')
-              return this.component.light.play('@yoda', 'system://setWelcome.js')
+              this.component.light.play('@yoda', 'system://setWelcome.js')
+                .then(() => this.component.light.stop('@yoda', 'system://boot.js'))
+              return this.component.light.appSound('@yoda', 'system://startup0.ogg')
             })
             .then(() => {
-              // not need to play startup music after relogin
-              this.component.light.stop('@yoda', 'system://boot.js')
-              this.welcoming = false
+              this.enableRuntimeFor('welcoming')
             })
             .catch(err => {
-              this.welcoming = false
+              this.enableRuntimeFor('welcoming')
               logger.error('unexpected error on welcoming', err.stack)
             })
         })

@@ -65,29 +65,6 @@ DBus.prototype.callMethod = function callMethod (
 DBus.prototype.listenSignals = function listenSignals () {
   var self = this
   var proxy = new DbusRemoteCall(this.service._bus)
-  var ttsEvents = {
-    'ttsdevent': function onTtsEvent (msg) {
-      var channel = `callback:tts:${_.get(msg, 'args.0')}`
-      logger.info(`VuiDaemon received ttsd event on channel(${channel})`)
-      EventEmitter.prototype.emit.apply(
-        self,
-        [ channel ].concat(msg.args.slice(1))
-      )
-    }
-  }
-  proxy.listen(
-    'com.service.tts',
-    '/tts/service',
-    'tts.service',
-    function onTtsEvent (msg) {
-      var handler = ttsEvents[msg && msg.name]
-      if (handler == null) {
-        logger.warn(`Unknown ttsd event type '${msg && msg.name}'.`)
-        return
-      }
-      handler(msg)
-    }
-  )
 
   var multimediaEvents = {
     'multimediadevent': function onMultimediaEvent (msg) {
@@ -249,25 +226,15 @@ DBus.prototype.amsexport = {
     in: ['s'],
     out: ['b'],
     fn: function ReportSysStatus (status, cb) {
-      if (!this.runtime.inited) {
-        logger.debug('system initing, ignoring sys status report')
-        return cb(null, false)
-      }
-      if (this.runtime.welcoming) {
-        logger.debug('system welcoming, ignoring sys status report')
-        return cb(null, false)
-      }
-      if (this.runtime.hibernated) {
-        logger.debug('system hibernated, ignoring sys status report')
+      if (this.runtime.hasBeenDisabled()) {
+        logger.debug(`system disabled ${this.runtime.getDisabledReasons()}, ignoring sys status report`)
         return cb(null, false)
       }
       try {
         var data = JSON.parse(status)
         cb(null, true)
 
-        if (data.upgrade === true) {
-          this.runtime.startApp('@upgrade', {}, {})
-        } else if (this.component.custodian.isConfiguringNetwork()) {
+        if (this.component.custodian.isConfiguringNetwork()) {
           logger.info('recevice message with data', data)
           var filter = [
             'CTRL-EVENT-SCAN-STARTED',
@@ -464,20 +431,17 @@ DBus.prototype.amsexport = {
     in: ['s'],
     out: ['s'],
     fn: function TextNLP (text, cb) {
-      this.component.flora.getNlpResult(text, (err, nlp, action) => {
-        if (err) {
-          logger.error('Unexpected error on get nlp for asr', text, err.stack)
-          return cb(null, JSON.stringify({ ok: false, error: err.message }))
-        }
-        this.runtime.onVoiceCommand(text, nlp, action)
-          .then(
-            () => cb(null, JSON.stringify({ ok: true, result: { nlp: nlp, action: action } })),
-            err => {
-              logger.error('unexpected error on voice command', err.stack)
-              cb(null, JSON.stringify({ ok: false, error: err.message }))
-            }
-          )
-      })
+      this.component.flora.getNlpResult(text)
+        .then(res => {
+          var nlp = res[0]
+          var action = res[1]
+          return this.runtime.handleNlpIntent(text, nlp, action)
+            .then(() => cb(null, JSON.stringify({ ok: true, result: { nlp: nlp, action: action } })))
+        })
+        .catch(err => {
+          logger.error('unexpected error on text command', err.stack)
+          cb(null, JSON.stringify({ ok: false, error: err.message }))
+        })
     }
   },
   NLPIntent: {
@@ -491,7 +455,7 @@ DBus.prototype.amsexport = {
       if (text == null || nlp == null || action == null) {
         return cb(null, JSON.stringify({ ok: false, message: 'Invalid Argument' }))
       }
-      this.runtime.onVoiceCommand(text, nlp, action)
+      this.runtime.handleNlpIntent(text, nlp, action)
         .then(
           () => cb(null, JSON.stringify({ ok: true, result: { nlp: nlp, action: action } })),
           err => {
@@ -645,9 +609,7 @@ DBus.prototype.yodadebug = {
         'awaken',
         'asrState',
         'pickingUp',
-        'pickingUpDiscardNext',
-        'solitaryVoiceComingTimeout',
-        'noVoiceInputTimeout'
+        'pickingUpDiscardNext'
       ]
       keys.forEach(key => {
         ret.result[key] = this.component.turen[key]
@@ -721,19 +683,25 @@ DBus.prototype.yodadebug = {
         floraEmit('rokid.turen.local_awake', [0], 100)
         floraEmit('rokid.speech.inter_asr', ['若琪'], 200)
         floraEmit('rokid.speech.extra', ['{"activation": "fake"}'], 600)
-        cb(null, JSON.stringify({ ok: true, result: null }))
+        return cb(null, JSON.stringify({ ok: true, result: null }))
       }
-      this.component.flora.getNlpResult(asr, (err, nlp, action) => {
-        if (err) {
-          return logger.error('Unexpected error on get nlp for asr', asr, err.stack)
-        }
-        floraEmit('rokid.turen.voice_coming', [], 0)
-        floraEmit('rokid.turen.local_awake', [0], 100)
-        floraEmit('rokid.speech.inter_asr', ['若琪'], 200)
-        floraEmit('rokid.speech.final_asr', [asr], 250)
-        cb(null, JSON.stringify({ ok: true, result: { nlp: nlp, action: action } }))
-        floraEmit('rokid.speech.nlp', [JSON.stringify(nlp), JSON.stringify(action)], 600)
-      })
+      this.component.flora.getNlpResult(asr)
+        .then(
+          res => {
+            var nlp = res[0]
+            var action = res[1]
+            floraEmit('rokid.turen.voice_coming', [], 0)
+            floraEmit('rokid.turen.local_awake', [0], 100)
+            floraEmit('rokid.speech.inter_asr', ['若琪'], 200)
+            floraEmit('rokid.speech.final_asr', [asr], 250)
+            cb(null, JSON.stringify({ ok: true, result: { nlp: nlp, action: action } }))
+            floraEmit('rokid.speech.nlp', [JSON.stringify(nlp), JSON.stringify(action)], 600)
+          },
+          err => {
+            logger.error('Unexpected error on get nlp for asr', asr, err.stack)
+            cb(null, JSON.stringify({ ok: false, message: err.message }))
+          }
+        )
     }
   },
   mockKeyboard: {

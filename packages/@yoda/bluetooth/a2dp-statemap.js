@@ -46,21 +46,23 @@ var stateFilters = [
   },
   // started music
   {
-    inflowMsg: {a2dpstate: 'opened', connect_state: 'connected', play_state: 'played', broadcast_state: 'closed'},
+    inflowMsg: {mode: 'A2DP_SINK', a2dpstate: 'opened', connect_state: 'connected', play_state: 'played', broadcast_state: 'closed'},
     outflowEvent: {type: 'audio_state_changed', state: protocol.AUDIO_STATE.PLAYING}
   },
   // stopped music
   {
-    inflowMsg: {a2dpstate: 'opened', connect_state: 'connected', play_state: 'stopped', broadcast_state: 'closed'},
+    inflowMsg: {mode: 'A2DP_SINK', a2dpstate: 'opened', connect_state: 'connected', play_state: 'stopped', broadcast_state: 'closed'},
     outflowEvent: {type: 'audio_state_changed', state: protocol.AUDIO_STATE.STOPPED}
   },
   // discoverable
   {
+    lastInflowMsg: {broadcast_state: 'closed'},
     inflowMsg: {broadcast_state: 'opened'},
     outflowEvent: {type: 'discovery_state_changed', state: protocol.DISCOVERY_STATE.ON}
   },
   // undiscoverable
   {
+    lastInflowMsg: {broadcast_state: 'opened'},
     inflowMsg: {broadcast_state: 'closed'},
     outflowEvent: {type: 'discovery_state_changed', state: protocol.DISCOVERY_STATE.OFF}
   }

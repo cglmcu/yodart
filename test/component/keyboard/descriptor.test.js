@@ -6,12 +6,25 @@ var AppRuntime = require('@yoda/mock/lib/mock-app-runtime')
 var helper = require('../../helper')
 var Keyboard = require(`${helper.paths.runtime}/lib/component/keyboard`)
 
-test('shall interpret descriptor: openUrl', t => {
-  t.plan(2)
+function setUp () {
   var runtime = new AppRuntime()
   var keyboard = new Keyboard(runtime)
+  Object.defineProperty(runtime.component, 'keyboard', {
+    value: keyboard
+  })
 
   keyboard.input = new EventEmitter()
+  keyboard.input.disconnect = function noop () {}
+
+  return { runtime: runtime, keyboard: keyboard }
+}
+
+test('shall interpret descriptor: openUrl', t => {
+  t.plan(2)
+  var pack = setUp()
+  var keyboard = pack.keyboard
+  var runtime = pack.runtime
+
   keyboard.listen()
 
   keyboard.config = {
@@ -40,10 +53,10 @@ test('shall interpret descriptor: openUrl', t => {
 
 test('shall interpret descriptor: runtimeMethod', t => {
   t.plan(2)
-  var runtime = new AppRuntime()
-  var keyboard = new Keyboard(runtime)
+  var pack = setUp()
+  var keyboard = pack.keyboard
+  var runtime = pack.runtime
 
-  keyboard.input = new EventEmitter()
   keyboard.listen()
 
   keyboard.config = {
@@ -59,6 +72,38 @@ test('shall interpret descriptor: runtimeMethod', t => {
   }
 
   runtime.foobar = function (args1, args2) {
+    t.strictEqual(args1, 'foobar://example.com')
+    t.deepEqual(args2, {
+      preemptive: false
+    })
+  }
+
+  keyboard.input.emit('click', { keyCode: 233 })
+
+  runtime.deinit()
+})
+
+test('shall interpret descriptor: componentMethod', t => {
+  t.plan(2)
+  var pack = setUp()
+  var keyboard = pack.keyboard
+  var runtime = pack.runtime
+
+  keyboard.listen()
+
+  keyboard.config = {
+    '233': {
+      click: {
+        componentMethod: 'keyboard.foobar',
+        params: [
+          'foobar://example.com',
+          { preemptive: false }
+        ]
+      }
+    }
+  }
+
+  keyboard.foobar = function (args1, args2) {
     t.strictEqual(args1, 'foobar://example.com')
     t.deepEqual(args2, {
       preemptive: false
@@ -206,6 +251,33 @@ test('gesture: override fallbacks', t => {
   }
 
   keyboard.input.emit('click', { keyCode: 233 })
+
+  runtime.deinit()
+})
+
+test('keyup: keyup should always fire regardless of not matching keyCode', t => {
+  t.plan(1)
+  var runtime = new AppRuntime()
+  var keyboard = new Keyboard(runtime)
+
+  keyboard.input = new EventEmitter()
+  keyboard.listen()
+
+  keyboard.config = {
+    '233': {
+      keyup: {
+        runtimeMethod: 'foobar'
+      }
+    }
+  }
+
+  runtime.foobar = function () {
+    t.pass('invoked')
+  }
+
+  keyboard.input.emit('keydown', { keyCode: 233, keyTime: 0 })
+  keyboard.input.emit('keydown', { keyCode: 244, keyTime: 0 })
+  keyboard.input.emit('keyup', { keyCode: 233, keyTime: 500 })
 
   runtime.deinit()
 })
@@ -406,6 +478,51 @@ test('longpress: multiple endpoints for time delta on interrupting another keydo
   keyboard.input.emit('longpress', { keyCode: 233, keyTime: 4000 })
   keyboard.input.emit('longpress', { keyCode: 233, keyTime: 7000 })
   keyboard.input.emit('keyup', { keyCode: 233 })
+
+  runtime.deinit()
+})
+
+test('longpress: interrupted with a new key code', t => {
+  t.plan(2)
+  var runtime = new AppRuntime()
+  var keyboard = new Keyboard(runtime)
+
+  keyboard.input = new EventEmitter()
+  keyboard.listen()
+
+  keyboard.config = {
+    '233': {
+      longpress: {
+        repeat: true,
+        runtimeMethod: 'foobar'
+      }
+    },
+    '244': {
+      longpress: {
+        timeDelta: 1000,
+        runtimeMethod: 'foobar'
+      }
+    }
+  }
+
+  runtime.foobar = function () {
+    t.pass('invoked')
+  }
+
+  keyboard.input.emit('keydown', { keyCode: 233, keyTime: 0 })
+  /** 1. */
+  keyboard.input.emit('longpress', { keyCode: 233, keyTime: 500 })
+
+  keyboard.input.emit('keydown', { keyCode: 244, keyTime: 0 })
+  /** keyCode should not match */
+  keyboard.input.emit('longpress', { keyCode: 233, keyTime: 1000 })
+
+  /** longpress criteria should not match */
+  keyboard.input.emit('longpress', { keyCode: 244, keyTime: 500 })
+
+  keyboard.input.emit('keyup', { keyCode: 233, keyTime: 1500 })
+  /** 2. while previous key keyup during second key long pressing */
+  keyboard.input.emit('longpress', { keyCode: 244, keyTime: 1000 })
 
   runtime.deinit()
 })

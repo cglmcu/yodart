@@ -41,14 +41,16 @@ class StandbyLight extends BaseConfig {
       standbyLight: this.onStandbyLightSwitchStatusChanged.bind(this)
     }
   }
-
+  reload () {
+    this.initStandbyLight()
+  }
   /**
    * init the standby light
    */
   initStandbyLight () {
     var switchValue = property.get('persist.sys.standbylightswitch')
     if (switchValue === SWITCH_OPEN) {
-      this.activity.light.play(STANDBY_LIGHT_JS, {}, {shouldResume: true})
+      this.activity.light.play(STANDBY_LIGHT_JS, {}, { shouldResume: true })
     } else {
       this.activity.light.stop(STANDBY_LIGHT_JS)
     }

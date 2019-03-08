@@ -4,7 +4,9 @@ var Directive = require('./directive').Directive
 var PlayerManager = require('./playerManager')
 var TtsEventHandle = require('@yodaos/ttskit').Convergence
 var MediaEventHandle = require('@yodaos/mediakit').Convergence
+var AudioMix = require('@yodaos/mediakit').AudioMix
 var logger = require('logger')('cloudAppClient')
+var property = require('@yoda/property')
 var Skill = require('./skill')
 var _ = require('@yoda/util')._
 
@@ -24,6 +26,7 @@ module.exports = activity => {
   // tts, media event handle
   var ttsClient = new TtsEventHandle(activity.tts)
   var mediaClient = new MediaEventHandle(activity.media, logger)
+  var audioMix = new AudioMix(activity.media, logger)
 
   // service
   var service = new Service({
@@ -58,6 +61,20 @@ module.exports = activity => {
           logger.log(`${skill.appId}: an error occur when destroy media ${err}`)
         })
     }
+    // continuous dialogue only for cloudappclient.
+    if (sos.skills.length > 1 && property.get('persist.sys.pickupswitch') === 'open') {
+      activity.setPickup(true)
+        .then(() => {
+          logger.warn(`success: open pickup for continuous dialogue after SKILL[${skill.appId}] exited.`)
+        })
+        .catch((err) => {
+          logger.warn(`failed: open pickup for continuous dialogue after SKILL[${skill.appId}] exited. err: ${err}`)
+        })
+    }
+  })
+  // for debug and test: save playerId map to property
+  pm.on('update', (handle) => {
+    property.set('app.cloudappclient.player', JSON.stringify(handle))
   })
 
   pm.on('change', (appId, playerId) => {
@@ -74,13 +91,27 @@ module.exports = activity => {
   directive.do('frontend', 'tts', function (dt, next) {
     logger.log(`start dt: tts.${dt.action}`)
     if (dt.action === 'say') {
+      // This is the sound mixing mechanism. AudioMix will use system config If no explicit `disableSuppress` is given.
+      var playerId = pm.getByAppId(dt.data.appId)
+      var playerMsg = pm.getDataByPlayerId(playerId) || {}
+      // The value of interrupt can be the following:
+      //   - true (interrupt)
+      //   - false (suppress)
+      //   - undefined (system config)
+      var interrupt = playerMsg.disableSuppress
+      if (playerId) {
+        audioMix.begin(interrupt, playerId)
+      }
       ttsClient.speak(dt.data.item.tts, function (name) {
         logger.log(`end dt: tts.${dt.action} ${name}`)
         if (name === 'start') {
           sos.sendEventRequest('tts', 'start', dt.data, _.get(dt, 'data.item.itemId'))
         } else if (name === 'end') {
+          // AudioMix end.
+          audioMix.end()
           sos.sendEventRequest('tts', 'end', dt.data, _.get(dt, 'data.item.itemId'), next)
         } else if (name === 'cancel' || name === 'error') {
+          audioMix.end()
           sos.sendEventRequest('tts', name, dt.data, _.get(dt, 'data.item.itemId'), function cancel () {
             logger.info(`end task early because tts.${name} event emit`)
             // end task early, no longer perform the following tasks
@@ -90,9 +121,6 @@ module.exports = activity => {
       })
     } else if (dt.action === 'cancel') {
       activity.tts.stop()
-        .then(() => {
-          logger.log(`end dt: tts.${dt.action}`)
-        })
         .catch((err) => {
           logger.log(`end dt: tts.${dt.action} ${err}`)
         })
@@ -101,37 +129,68 @@ module.exports = activity => {
   })
   directive.do('frontend', 'media', function (dt, next) {
     var playerId
+    // this is for medie.start event and speedchange event.
+    var eventDeferred = null
     logger.log(`exe dt: media.${dt.action}`)
     function setSpeed (speed) {
-      if (typeof speed === 'number') {
-        activity.media.setSpeed(speed, pm.getByAppId(dt.data.appId))
-      }
+      return activity.media.setSpeed(speed, pm.getByAppId(dt.data.appId))
     }
     function setOffset (offset) {
-      if (typeof offset === 'number' && offset >= 0) {
-        activity.media.seek(offset, pm.getByAppId(dt.data.appId))
-      }
+      return activity.media.seek(offset, pm.getByAppId(dt.data.appId))
     }
     if (dt.action === 'play') {
       if (mediaClient.getUrl() === dt.data.item.url) {
         logger.log(`play forward offset: ${dt.data.item.offsetInMilliseconds} mutiple: ${dt.data.item.playMultiple}`)
-        setSpeed(dt.data.item.playMultiple)
-        if (dt.data.item.offsetInMilliseconds > 0) {
+        if (+dt.data.item.playMultiple > 0) {
+          setSpeed(+dt.data.item.playMultiple)
+            .then(() => {
+              playerId = pm.getByAppId(dt.data.appId)
+              pm.setDataByPlayerId(playerId, dt.data)
+            })
+            .catch((err) => {
+              logger.error(`[cac-dt] set speed failed with error: ${err}`)
+            })
+        }
+        // Users may need to play from the beginning
+        if (dt.data.item.offsetInMilliseconds >= 0) {
           setOffset(dt.data.item.offsetInMilliseconds)
+            .catch((err) => {
+              logger.error(`[cac-dt] set offset failed with error: ${err}`)
+            })
         }
         activity.media.resume(pm.getByAppId(dt.data.appId))
+          .catch((err) => {
+            logger.error(`[cac-dt] activity.media.resume error: ${err}`)
+          })
+        next()
       } else {
         mediaClient.start(dt.data.item.url, { multiple: true }, function (name, args) {
           logger.log(`[cac-event](${name}) args(${JSON.stringify(args)}) `)
           if (name === 'resolved') {
-            pm.setByAppId(dt.data.appId, args)
+            pm.setByAppId(dt.data.appId, args, dt.data)
           } else if (name === 'prepared') {
-            setSpeed(dt.data.item.playMultiple)
-            setOffset(dt.data.item.offsetInMilliseconds)
-            sos.sendEventRequest('media', 'prepared', dt.data, {
-              itemId: _.get(dt, 'data.item.itemId'),
-              duration: args[0],
-              progress: args[1]
+            if (+dt.data.item.playMultiple > 0) {
+              logger.log(`[cac-dt] setSpeed with speed(${dt.data.item.playMultiple})`)
+              setSpeed(+dt.data.item.playMultiple)
+                .catch((err) => {
+                  logger.error(`[cac-dt] set speed failed with error: ${err}`)
+                })
+            }
+            // Only perform operations that are not played from the beginning...
+            if (dt.data.item.offsetInMilliseconds > 0) {
+              logger.log(`[cac-dt] set offset with offset(${dt.data.item.offsetInMilliseconds}`)
+              setOffset(dt.data.item.offsetInMilliseconds)
+                .catch((err) => {
+                  logger.error(`[cac-dt] set offset failed with error: ${err}`)
+                })
+            }
+            eventDeferred = new Promise((resolve, reject) => {
+              // should be always upload event to cloud even if prepard upload failed.
+              sos.sendEventRequest('media', 'prepared', dt.data, {
+                itemId: _.get(dt, 'data.item.itemId'),
+                duration: args[0],
+                progress: args[1]
+              }, resolve)
             })
           } else if (name === 'paused') {
             sos.sendEventRequest('media', 'paused', dt.data, {
@@ -153,11 +212,34 @@ module.exports = activity => {
           } else if (name === 'cancel' || name === 'error') {
             sos.sendEventRequest('media', name, dt.data, {
               itemId: _.get(dt, 'data.item.itemId'),
-              token: _.get(dt, 'data.item.token')
+              token: _.get(dt, 'data.item.token'),
+              duration: args[0],
+              progress: args[1]
             }, function cancel () {
               logger.info(`end task early because meida.${name} event emit`)
               // end task early, no longer perform the following tasks
               next(true)
+            })
+          } else if (name === 'seekcomplete') {
+            sos.sendEventRequest('media', 'seekcomplete', dt.data, {
+              itemId: _.get(dt, 'data.item.itemId'),
+              duration: args[0],
+              progress: args[1]
+            })
+          } else if (name === 'speedchange') {
+            playerId = pm.getByAppId(dt.data.appId)
+            var data = pm.getDataByPlayerId(playerId)
+            if (eventDeferred === null) {
+              return
+            }
+            // The speedchange event should be upload after prepared event responded.
+            eventDeferred.then(() => {
+              sos.sendEventRequest('media', 'setspeed', dt.data, {
+                itemId: _.get(dt, 'data.item.itemId'),
+                duration: args[0],
+                progress: args[1],
+                speed: +data.item.playMultiple
+              })
             })
           }
         })
@@ -165,9 +247,6 @@ module.exports = activity => {
     } else if (dt.action === 'pause') {
       // no need to send events here because player will emit paused event
       activity.media.pause(pm.getByAppId(dt.data.appId))
-        .then(() => {
-          logger.log(`[cac-dt](media, pause) res(success)`)
-        })
         .catch((err) => {
           logger.log(`[cac-dt](media, pause) err: ${err}`)
         })
@@ -175,10 +254,7 @@ module.exports = activity => {
     } else if (dt.action === 'resume') {
       // no need to send events here because player will emit resumed event
       activity.media.resume(pm.getByAppId(dt.data.appId))
-        .then(() => {
-          logger.log(`[cac-dt](media, resume) res(success)`)
-          next()
-        })
+        .then(next)
         .catch((err) => {
           logger.log(`[cac-dt](media, resume) err: ${err}`)
         })
@@ -187,14 +263,8 @@ module.exports = activity => {
       if (playerId) {
         pm.deleteByAppId(dt.data.appId)
         activity.media.stop(playerId)
-          .then(() => {
-            sos.sendEventRequest('media', 'cancel', dt.data, {
-              itemId: _.get(dt, 'data.item.itemId'),
-              token: _.get(dt, 'data.item.token')
-            })
-          })
           .catch((err) => {
-            logger.log('media stop failed', err)
+            logger.log('media cancel failed', err)
           })
       }
       next()
@@ -203,9 +273,6 @@ module.exports = activity => {
       if (playerId) {
         pm.deleteByAppId(dt.data.appId)
         activity.media.stop(playerId)
-          .then(() => {
-            logger.log('media stop success')
-          })
           .catch((err) => {
             logger.log('media stop failed', err)
           })
@@ -316,12 +383,16 @@ module.exports = activity => {
     if (appId && intentType === 'EXIT') {
       logger.warn(`The intent value is [EXIT] with appId: [${appId}]`)
       sos.destroyByAppId(appId)
+      // clear domain locally and it will automatically upload to cloud
+      activity.exit({ clearContext: true })
       return
     }
     if (intentType === 'EXIT') {
       logger.warn(`${this.appId}: intent value is [EXIT]`)
       sos.destroy()
-      activity.setBackground()
+      pm.clear()
+      // clear domain locally and it will automatically upload to cloud
+      activity.exit({ clearContext: true })
       return
     }
     logger.log(`${this.appId} app request`)

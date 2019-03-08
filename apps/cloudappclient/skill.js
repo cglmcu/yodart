@@ -40,6 +40,9 @@ Skill.prototype.onrequest = function (action, append) {
   logger.log(`--> update shouldEndSession: ${this.shouldEndSession}`)
   logger.log(`skill ${this.appId} onrequest`)
   this.transform(directives || [], append)
+  if (append === undefined) {
+    this.paused = false
+  }
   if (this.paused === false) {
     logger.log('onrequest nextTick', this.directives)
     /**
@@ -51,6 +54,8 @@ Skill.prototype.onrequest = function (action, append) {
       logger.log('onrequest nextTick start', this.directives)
       this.emit('start')
     })
+  } else {
+    logger.warn(`SKILL[${this.appId}] paused. waiting for lifecycle resume.`)
   }
 }
 
@@ -303,6 +308,25 @@ Skill.prototype.transform = function (directives, append) {
       tdt.data.appId = this.appId
       this.directives.push(tdt)
     }
+  })
+  // sort directives
+  var dtOrder = {
+    'native': 1,
+    'tts': 2,
+    'media': 3,
+    'pickup': 4
+  }
+  this.directives = this.directives.sort(function (a, b) {
+    // This is the business optimization code.
+    // purpose: exchange media.pause/stop and tts order. media.pause -> tts.say
+    if (a.type === 'media' && b.type === 'tts') {
+      return a.action === 'stop' || a.action === 'pause' ? -1 : 1
+    }
+    if (b.type === 'media' && a.type === 'tts') {
+      return b.action === 'stop' || b.action === 'pause' ? 1 : -1
+    }
+
+    return (dtOrder[a.type] || 100) - (dtOrder[b.type] || 100)
   })
   this.lastDirectives = Object.assign([], this.directives)
 }

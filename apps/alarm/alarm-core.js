@@ -134,7 +134,7 @@ AlarmCore.prototype._controlVolume = function (minVolume, tick, duration) {
  * @param {String} Options mode
  */
 AlarmCore.prototype._setConfig = function (options) {
-  fs.readFile(CONFIGFILEPATH, 'utf8', function readFileCallback (err, data) {
+  fs.readFile(CONFIGFILEPATH, 'utf8', (err, data) => {
     if (err) {
       logger.error('alarm set config: get local data error', err.stack)
       return
@@ -158,9 +158,15 @@ AlarmCore.prototype._setConfig = function (options) {
         logger.error('alarm set config: clear local data error', err.stack)
         return
       }
-      fs.writeFile(CONFIGFILEPATH, JSON.stringify(parseJson), function (err) {
+      fs.writeFile(CONFIGFILEPATH, JSON.stringify(parseJson), (err) => {
         if (err) {
           logger.error('alarm set config: update local data error', err && err.stack)
+        }
+        // parseJson is empty, kill alarm
+        if (Object.keys(parseJson).length === 0) {
+          // kill alarm
+          logger.log('kill alarm')
+          this.activity.exit()
         }
       })
     })
@@ -220,15 +226,15 @@ AlarmCore.prototype.restoreEventsDefaults = function () {
  * @param {Object} Options formated alarm data
  * @param {String} Options alarm type
  */
-AlarmCore.prototype._taskCallback = function (option, mode) {
-  var state = wifi.getNetworkState()
+AlarmCore.prototype._taskCallback = function (option, isLocal) {
+  var status = wifi.getWifiState() === wifi.WIFI_CONNECTED && !isLocal
   var tts = option.tts
   if (option.type === 'Remind') {
     tts = this.reminderTTS.join(',') + option.tts
     this.reminderTTS = []
     this.startTts = true
     this.activity.setForeground().then(() => {
-      if (state === wifi.NETSERVER_CONNECTED) {
+      if (status) {
         return this._ttsSpeak(tts || option.tts)
       }
     }).then(() => {
@@ -240,10 +246,8 @@ AlarmCore.prototype._taskCallback = function (option, mode) {
     }).then(() => {
       this.stopTimeout = setTimeout(() => {
         logger.log('alarm-reminder: ', option.id, ' stop after 5 minutes')
-        this.restoreEventsDefaults()
         this.scheduleHandler.clearReminderQueue()
-        this.activity.media.stop()
-        this.activity.setBackground()
+        this.clearAll()
       }, 5 * 60 * 1000)
     }).catch(() => {
       // alarm only need end event, but promise has to reject
@@ -251,21 +255,18 @@ AlarmCore.prototype._taskCallback = function (option, mode) {
   } else {
     this.activity.setForeground().then(() => {
       this.startTts = true
-      if (state === wifi.NETSERVER_CONNECTED) {
+      if (status) {
         return this._ttsSpeak(option.tts)
       }
     }).then(() => {
       logger.info('alarm start second media')
-      var ringUrl = state === wifi.NETSERVER_CONNECTED ? option.url : DEFAULT_ALARM_RING
+      var ringUrl = status ? option.url : DEFAULT_ALARM_RING
       this.activity.media.start(ringUrl, { streamType: 'alarm' })
       return this.activity.media.setLoopMode(true)
     }).then(() => {
       this.stopTimeout = setTimeout(() => {
         logger.log('alarm: ', option.id, ' stop after 5 minutes')
-        this.activity.media.stop()
-        this._clearTask(mode, option)
-        this.restoreEventsDefaults()
-        this.activity.setBackground()
+        this.clearAll()
       }, 5 * 60 * 1000)
     }).catch(() => {
       // alarm only need end event, but promise has to reject
@@ -279,10 +280,11 @@ AlarmCore.prototype._taskCallback = function (option, mode) {
  * @param {Object} Options formated command data
  * @param {String} Options mode
  */
-AlarmCore.prototype._onTaskActive = function (option, mode) {
+AlarmCore.prototype._onTaskActive = function (option) {
   this.clearAll()
   this.activity.setForeground().then(() => {
     logger.log('alarm: ', option.id, ' start ')
+    var mode = option.mode
     if (this.jobQueue.indexOf(option.id) > -1) {
       return
     }
@@ -299,13 +301,6 @@ AlarmCore.prototype._onTaskActive = function (option, mode) {
     this.activeOption = option
     this._preventEventsDefaults()
     this._controlVolume(10, 1000, 7)
-    var state = wifi.getNetworkState()
-    var ringUrl = ''
-    if (option.type === 'Remind') {
-      ringUrl = DEFAULT_REMINDER_RING
-    } else {
-      ringUrl = state === wifi.NETSERVER_CONNECTED ? option.url : DEFAULT_ALARM_RING
-    }
     // send card to app
     request({
       activity: this.activity,
@@ -314,14 +309,30 @@ AlarmCore.prototype._onTaskActive = function (option, mode) {
         alarmId: option.id
       }
     })
-
     this.startTts = false
-    this.activity.media.start(ringUrl, { streamType: 'alarm' }).then(() => {
-      this.taskTimeout = setTimeout(() => {
-        this.activity.media.stop()
-        this._taskCallback(option, mode)
-      }, 7000)
-    })
+    this.playFirstMedia()
+  })
+}
+
+/**
+ * alarm play first media
+ * @param {Boolean} isLocal if play local ring
+ */
+AlarmCore.prototype.playFirstMedia = function (isLocal) {
+  var state = wifi.getWifiState()
+  var ringUrl = ''
+  if (this.activeOption.type === 'Remind') {
+    ringUrl = DEFAULT_REMINDER_RING
+  } else {
+    ringUrl = state === wifi.WIFI_CONNECTED && !isLocal ? this.activeOption.url : DEFAULT_ALARM_RING
+  }
+  this.activity.media.start(ringUrl, { streamType: 'alarm' }).then(() => {
+    this.taskTimeout = setTimeout(() => {
+      this.activity.media.stop()
+      this._taskCallback(this.activeOption, isLocal)
+    }, 7000)
+  }).catch((err) => {
+    logger.log('alarm first media play error', err.stack)
   })
 }
 
@@ -334,7 +345,7 @@ AlarmCore.prototype._onTaskActive = function (option, mode) {
 AlarmCore.prototype.startTask = function (commandOpt, pattern) {
   logger.log('alarm task start')
   this.scheduleHandler.create(pattern, () => {
-    this._onTaskActive(commandOpt, commandOpt.mode)
+    this._onTaskActive(commandOpt)
   }, commandOpt)
 }
 
@@ -358,10 +369,13 @@ AlarmCore.prototype.init = function (command, isUpdateNative) {
   isUpdateNative && flag && this._setConfig(options)
   // clear local data
   if (!flag) {
-    fs.writeFile(CONFIGFILEPATH, '{}', function (err) {
+    fs.writeFile(CONFIGFILEPATH, '{}', (err) => {
       if (err) {
         logger.error('alarm init: clear local data error', err.stack)
       }
+      // kill alarm
+      logger.log('kill alarm')
+      this.activity.exit()
     })
   }
 }
